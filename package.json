@@ -1,0 +1,23 @@
+{
+  "name": "hathor-integration-test-helper",
+  "version": "0.0.1",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun --hot run index.ts",
+    "test": "bun run test:unit",
+    "test:unit": "for f in __tests__/*.test.ts; do bun test \"$f\" || exit 1; done",
+    "typecheck": "bunx tsc --noEmit",
+    "check": "bun run typecheck && bun run test:unit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@hathor/wallet-lib": "^2.5.1"
+  }
+}

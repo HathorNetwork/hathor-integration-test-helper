@@ -1,0 +1,9 @@
+[test]
+root = "./__tests__"
+
+# Bun runs all test files in a single process, so mock.module() calls
+# leak across files. Use `bun run test` (package.json) to run each
+# file in isolation. Integration tests require a live Docker stack.
+#
+# bun run test            — unit tests (isolated per-file)
+# bun run test:integration — e2e tests against Docker stack
