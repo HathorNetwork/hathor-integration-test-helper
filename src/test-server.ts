@@ -1,20 +1,11 @@
 import { config } from "./config";
+import { logger } from "./logger";
 
 // Bun.serve is heavily overloaded; the discriminated union of options
 // types collapses on spread, so we accept an opaque options object and
 // let the caller (test harness) own its precise shape.
 type ServeOptions = object;
 type ServeFn = (options: ServeOptions) => ReturnType<typeof Bun.serve>;
-
-function emitWarning(payload: Record<string, unknown>): void {
-  console.warn(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      level: "warn",
-      ...payload,
-    }),
-  );
-}
 
 /**
  * Detect the parallel worker index from `JEST_WORKER_ID` or
@@ -33,10 +24,9 @@ function inferWorkerId(): number {
   if (Number.isSafeInteger(parsed) && parsed >= 0) {
     return parsed;
   }
-  emitWarning({
+  logger.warn({
     event: "test_server.invalid_worker_id",
-    raw,
-    fallbackWorkerId: 0,
+    meta: { raw, fallbackWorkerId: 0 },
   });
   return 0;
 }
@@ -104,9 +94,9 @@ export function startTestServer(
       }
       tried.push(port);
       lastError = err;
-      emitWarning({
+      logger.warn({
         event: "test_server.port_in_use",
-        port,
+        meta: { port },
       });
     }
   }

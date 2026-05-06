@@ -10,6 +10,7 @@
  * operator running this in CI can spot a missing override before the
  * first request goes out.
  */
+import { logger } from "./logger";
 export interface AppConfig {
   readonly SIMPLE_WALLET_CACHE_SIZE: number;
   readonly PORT: number;
@@ -138,16 +139,10 @@ function parseOptionalTrimmedString(
 }
 
 function defaultOnWarning(warning: ConfigWarning): void {
-  // Emit a JSON line on stderr that matches the structured-logger shape
-  // without taking a hard import on logger.ts (which would couple every
-  // config consumer to the logger module's transitive deps).
-  console.warn(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      level: "warn",
-      ...warning,
-    }),
-  );
+  logger.warn({
+    event: warning.event,
+    meta: { key: warning.key, defaultValue: warning.defaultValue },
+  });
 }
 
 export function loadConfig(

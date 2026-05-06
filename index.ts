@@ -7,6 +7,7 @@
  */
 import { applyWalletLibBigIntPatch } from "./src/bigint-patch";
 import { config } from "./src/config";
+import { logger } from "./src/logger";
 
 applyWalletLibBigIntPatch();
 
@@ -17,11 +18,7 @@ const server = Bun.serve({
   },
 });
 
-console.log(
-  JSON.stringify({
-    ts: new Date().toISOString(),
-    level: "info",
-    event: "server.started",
-    port: server.port,
-  }),
-);
+logger.info({
+  event: "server.started",
+  meta: { port: server.port },
+});
