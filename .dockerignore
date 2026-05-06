@@ -1,0 +1,37 @@
+# Dependencies (installed in container)
+node_modules
+
+# Version control
+.git
+.gitignore
+
+# Documentation
+*.md
+
+# Tests
+**/*.test.ts
+coverage
+*.lcov
+
+# Environment files
+.env
+.env.*
+
+# Editor/IDE
+.idea
+.vscode
+.DS_Store
+
+# Claude Code
+.claude
+
+# Build artifacts
+out
+dist
+*.tgz
+*.tsbuildinfo
+.cache
+tsconfig.json
+Makefile
+docker-compose.yml
+docs
