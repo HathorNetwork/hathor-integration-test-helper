@@ -1,16 +1,44 @@
 import { config } from "./config";
 
-/** Detect the parallel worker index from Bun, Jest, or CI environment variables. */
+// Bun.serve is heavily overloaded; the discriminated union of options
+// types collapses on spread, so we accept an opaque options object and
+// let the caller (test harness) own its precise shape.
+type ServeOptions = object;
+type ServeFn = (options: ServeOptions) => ReturnType<typeof Bun.serve>;
+
+function emitWarning(payload: Record<string, unknown>): void {
+  console.warn(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "warn",
+      ...payload,
+    }),
+  );
+}
+
+/**
+ * Detect the parallel worker index from `JEST_WORKER_ID` or
+ * `CI_NODE_INDEX`. When a candidate env var is set but malformed, the
+ * caller is warned (silent normalisation collapses every worker onto
+ * port range 0, which defeats the whole point of a per-worker fallback).
+ */
 function inferWorkerId(): number {
-  const fromBun = process.env.BUN_WORKER_ID;
   const fromNode = process.env.JEST_WORKER_ID;
   const fromCi = process.env.CI_NODE_INDEX;
 
-  const raw = fromBun ?? fromNode ?? fromCi;
-  if (!raw) return 0;
+  const raw = fromNode ?? fromCi;
+  if (raw === undefined || raw === "") return 0;
 
   const parsed = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  if (Number.isSafeInteger(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  emitWarning({
+    event: "test_server.invalid_worker_id",
+    raw,
+    fallbackWorkerId: 0,
+  });
+  return 0;
 }
 
 /**
@@ -35,23 +63,61 @@ export function buildTestPortCandidates(
   return candidates;
 }
 
+function isAddressInUse(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code: unknown }).code === "EADDRINUSE"
+  );
+}
+
 /**
  * Start a Bun.serve() instance for tests, trying an ephemeral port first
- * then falling back to deterministic per-worker ports.
+ * then falling back to deterministic per-worker ports. Only EADDRINUSE
+ * errors are swallowed across iterations; any other error is rethrown
+ * immediately so a malformed `options` (missing fetch handler, bad TLS
+ * config, etc.) surfaces with its true cause instead of being masked
+ * as "address in use" noise on a later candidate.
+ *
+ * The optional `serveFn` parameter lets tests inject a stubbed factory
+ * without monkey-patching the Bun global.
+ *
+ * @throws The original EADDRINUSE error from the last candidate when
+ *   every port is in use, with `{tried: [...]}` recorded on the error
+ *   for diagnosis. Throws other errors unchanged.
  */
 export function startTestServer(
-  options: Record<string, unknown>,
+  options: ServeOptions,
+  serveFn: ServeFn = Bun.serve as ServeFn,
 ): ReturnType<typeof Bun.serve> {
   const candidates = buildTestPortCandidates();
   let lastError: unknown = null;
+  const tried: number[] = [];
 
   for (const port of candidates) {
     try {
-      return Bun.serve({ ...(options as Record<string, unknown>), port } as any);
+      return serveFn({ ...options, port });
     } catch (err) {
+      if (!isAddressInUse(err)) {
+        throw err;
+      }
+      tried.push(port);
       lastError = err;
+      emitWarning({
+        event: "test_server.port_in_use",
+        port,
+      });
     }
   }
 
-  throw lastError ?? new Error("Failed to start test server on fallback ports");
+  if (lastError instanceof Error) {
+    (lastError as Error & { tried?: number[] }).tried = tried;
+    throw lastError;
+  }
+  const exhausted = new Error(
+    `Failed to start test server; every fallback port was EADDRINUSE: ${tried.join(", ")}`,
+  ) as Error & { tried: number[] };
+  exhausted.tried = tried;
+  throw exhausted;
 }

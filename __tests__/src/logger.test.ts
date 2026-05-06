@@ -74,4 +74,24 @@ describe("logger with X-Test-Name context", () => {
     });
     expect(captured[0]!.payload.testName).toBe("delayed");
   });
+
+  test("renders BigInt values in meta as strings", () => {
+    logger.info({ event: "fund", meta: { amount: 1000n } });
+    expect(captured).toHaveLength(1);
+    const meta = captured[0]!.payload.meta as Record<string, unknown>;
+    expect(meta.amount).toBe("1000");
+  });
+
+  test("falls back to logger.serialization_failed on circular payload", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    logger.info({ event: "x", meta: circular });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.method).toBe("error");
+    expect(captured[0]!.payload.event).toBe("logger.serialization_failed");
+    expect(captured[0]!.payload.originalEvent).toBe("x");
+    expect(captured[0]!.payload.level).toBe("error");
+    expect(typeof captured[0]!.payload.reason).toBe("string");
+  });
 });

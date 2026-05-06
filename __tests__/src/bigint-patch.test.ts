@@ -58,3 +58,14 @@ test("handles mixed types in a realistic websocket message", () => {
   expect(result.height).toBe(42);
   expect(result.weight).toBe(100);
 });
+
+test("preserves MAX_SAFE_INTEGER as a number (boundary check)", () => {
+  // The reviver swallows BigInt() SyntaxErrors only for legitimate JSON
+  // numbers and only converts to BigInt when the value escapes the safe
+  // integer range. A regression that flips < to <= would convert
+  // MAX_SAFE_INTEGER itself to bigint and break wallet-lib callers
+  // expecting a `number`.
+  const result = JSONBigInt.parse(`{"v":${Number.MAX_SAFE_INTEGER}}`);
+  expect(typeof result.v).toBe("number");
+  expect(result.v).toBe(Number.MAX_SAFE_INTEGER);
+});

@@ -3,34 +3,53 @@
  *
  * We validate all inputs at startup and fail fast with actionable errors
  * so CI jobs don't fail later with hard-to-debug runtime exceptions.
+ *
+ * Values that have safe local-development defaults (network endpoints
+ * and test-only wallet credentials) are not required, but a structured
+ * warning is emitted via `onWarning` whenever a default is taken so an
+ * operator running this in CI can spot a missing override before the
+ * first request goes out.
  */
 export interface AppConfig {
-  SIMPLE_WALLET_CACHE_SIZE: number;
-  PORT: number;
-  NETWORK: "testnet";
-  ADDRESS_COUNT: number;
-  GENESIS_SEED_WORDS?: string;
-  HATHOR_NODE_URL: string;
-  TX_MINING_URL: string;
-  TX_MIN_WEIGHT?: number;
-  UTXO_SPLIT_AMOUNT: bigint;
-  UTXO_SPLIT_COUNT: number;
-  REFILL_THRESHOLD: number;
-  FUND_TIMEOUT_MS: number;
-  OBSERVATION_TIMEOUT_MS: number;
-  MAX_REQUEST_BODY_BYTES: number;
-  WALLET_PASSWORD: string;
-  WALLET_PIN_CODE: string;
-  TEST_PORT_FALLBACK_START: number;
-  TEST_PORT_FALLBACK_SPAN: number;
+  readonly SIMPLE_WALLET_CACHE_SIZE: number;
+  readonly PORT: number;
+  readonly NETWORK: "testnet";
+  readonly ADDRESS_COUNT: number;
+  readonly GENESIS_SEED_WORDS?: string;
+  readonly HATHOR_NODE_URL: string;
+  readonly TX_MINING_URL: string;
+  readonly TX_MIN_WEIGHT?: number;
+  readonly UTXO_SPLIT_AMOUNT: bigint;
+  readonly UTXO_SPLIT_COUNT: number;
+  readonly REFILL_THRESHOLD: number;
+  readonly FUND_TIMEOUT_MS: number;
+  readonly OBSERVATION_TIMEOUT_MS: number;
+  readonly MAX_REQUEST_BODY_BYTES: number;
+  readonly WALLET_PASSWORD: string;
+  readonly WALLET_PIN_CODE: string;
+  readonly TEST_PORT_FALLBACK_START: number;
+  readonly TEST_PORT_FALLBACK_SPAN: number;
+}
+
+export interface ConfigWarning {
+  readonly event: "config.using_default_url" | "config.using_default_secret";
+  readonly key: string;
+  readonly defaultValue: string;
+}
+
+export interface LoadConfigOptions {
+  readonly onWarning?: (warning: ConfigWarning) => void;
 }
 
 export class ConfigError extends Error {
-  constructor(public readonly issues: string[]) {
+  public readonly issues: readonly string[];
+
+  constructor(issues: readonly string[]) {
     super(
       `Invalid configuration:\n${issues.map((issue) => `- ${issue}`).join("\n")}`
     );
     this.name = "ConfigError";
+    this.issues = issues;
   }
 }
 
@@ -103,10 +122,11 @@ function parseOptionalIntEnv(
   issues: string[],
   constraints: IntConstraint = {},
 ): number | undefined {
-  if (env[key] === undefined || env[key] === "") {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === "") {
     return undefined;
   }
-  return parseIntEnv(env, key, env[key]!, issues, constraints);
+  return parseIntEnv(env, key, raw, issues, constraints);
 }
 
 function parseOptionalTrimmedString(
@@ -117,8 +137,25 @@ function parseOptionalTrimmedString(
   return value ? value : undefined;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
+function defaultOnWarning(warning: ConfigWarning): void {
+  // Emit a JSON line on stderr that matches the structured-logger shape
+  // without taking a hard import on logger.ts (which would couple every
+  // config consumer to the logger module's transitive deps).
+  console.warn(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "warn",
+      ...warning,
+    }),
+  );
+}
+
+export function loadConfig(
+  env: NodeJS.ProcessEnv,
+  options: LoadConfigOptions = {},
+): AppConfig {
   const issues: string[] = [];
+  const onWarning = options.onWarning ?? defaultOnWarning;
 
   const SIMPLE_WALLET_CACHE_SIZE = parseIntEnv(
     env,
@@ -205,18 +242,51 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     );
   }
 
-  const HATHOR_NODE_URL = (env.HATHOR_NODE_URL || "http://localhost:8083/v1a/").trim();
-  const TX_MINING_URL = (env.TX_MINING_URL || "http://localhost:8035/").trim();
+  const HATHOR_NODE_URL_RAW = env.HATHOR_NODE_URL?.trim();
+  const TX_MINING_URL_RAW = env.TX_MINING_URL?.trim();
+  const HATHOR_NODE_URL_DEFAULT = "http://localhost:8083/v1a/";
+  const TX_MINING_URL_DEFAULT = "http://localhost:8035/";
+  const HATHOR_NODE_URL = HATHOR_NODE_URL_RAW || HATHOR_NODE_URL_DEFAULT;
+  const TX_MINING_URL = TX_MINING_URL_RAW || TX_MINING_URL_DEFAULT;
 
-  if (!HATHOR_NODE_URL) {
-    issues.push("HATHOR_NODE_URL must not be empty");
-  }
-  if (!TX_MINING_URL) {
-    issues.push("TX_MINING_URL must not be empty");
-  }
+  const WALLET_PASSWORD_RAW = env.WALLET_PASSWORD;
+  const WALLET_PIN_CODE_RAW = env.WALLET_PIN_CODE;
+  const WALLET_PASSWORD_DEFAULT = "test-password";
+  const WALLET_PIN_CODE_DEFAULT = "123456";
+  const WALLET_PASSWORD = WALLET_PASSWORD_RAW || WALLET_PASSWORD_DEFAULT;
+  const WALLET_PIN_CODE = WALLET_PIN_CODE_RAW || WALLET_PIN_CODE_DEFAULT;
 
   if (issues.length > 0) {
     throw new ConfigError(issues);
+  }
+
+  if (!HATHOR_NODE_URL_RAW) {
+    onWarning({
+      event: "config.using_default_url",
+      key: "HATHOR_NODE_URL",
+      defaultValue: HATHOR_NODE_URL_DEFAULT,
+    });
+  }
+  if (!TX_MINING_URL_RAW) {
+    onWarning({
+      event: "config.using_default_url",
+      key: "TX_MINING_URL",
+      defaultValue: TX_MINING_URL_DEFAULT,
+    });
+  }
+  if (!WALLET_PASSWORD_RAW) {
+    onWarning({
+      event: "config.using_default_secret",
+      key: "WALLET_PASSWORD",
+      defaultValue: WALLET_PASSWORD_DEFAULT,
+    });
+  }
+  if (!WALLET_PIN_CODE_RAW) {
+    onWarning({
+      event: "config.using_default_secret",
+      key: "WALLET_PIN_CODE",
+      defaultValue: WALLET_PIN_CODE_DEFAULT,
+    });
   }
 
   return {
@@ -234,8 +304,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     FUND_TIMEOUT_MS,
     OBSERVATION_TIMEOUT_MS,
     MAX_REQUEST_BODY_BYTES,
-    WALLET_PASSWORD: env.WALLET_PASSWORD || "test-password",
-    WALLET_PIN_CODE: env.WALLET_PIN_CODE || "123456",
+    WALLET_PASSWORD,
+    WALLET_PIN_CODE,
     TEST_PORT_FALLBACK_START,
     TEST_PORT_FALLBACK_SPAN,
   };

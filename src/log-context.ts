@@ -17,9 +17,15 @@ interface LogContext {
 
 const storage = new AsyncLocalStorage<LogContext>();
 
-/** Run `fn` with `testName` bound as the current log context. */
+/**
+ * Run `fn` with `testName` bound as the current log context. Empty or
+ * whitespace-only test names are coerced to "unknown" so the docstring's
+ * promise holds at the boundary — callers don't need to defend against
+ * a missing X-Test-Name header upstream.
+ */
 export function runWithTestName<T>(testName: string, fn: () => T): T {
-  return storage.run({ testName }, fn);
+  const trimmed = testName.trim();
+  return storage.run({ testName: trimmed === "" ? "unknown" : trimmed }, fn);
 }
 
 /**
