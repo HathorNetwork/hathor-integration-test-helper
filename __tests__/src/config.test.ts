@@ -116,5 +116,18 @@ describe("loadConfig", () => {
       ),
     ).toBe(true);
   });
+
+  test("treats whitespace-only wallet credentials as fallback", () => {
+    const captured: ConfigWarning[] = [];
+    const cfg = loadConfig(
+      { WALLET_PASSWORD: "   ", WALLET_PIN_CODE: "  " },
+      { onWarning: (w) => captured.push(w) },
+    );
+    expect(cfg.WALLET_PASSWORD).toBe("test-password");
+    expect(cfg.WALLET_PIN_CODE).toBe("123456");
+    expect(
+      captured.filter((w) => w.event === "config.using_default_secret").length,
+    ).toBe(2);
+  });
 });
 
