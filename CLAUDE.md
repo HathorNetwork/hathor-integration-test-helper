@@ -38,3 +38,24 @@ Conventional Commits format:
 - Title: max 50 characters, e.g. `feat: add UTXO pool`
 - Body: wrap lines at 72 characters
 - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+
+## Review rules
+
+Machine-readable conventions that PRs must satisfy live in
+[`docs/review-rules/`](docs/review-rules/). Each `*.md` file in that
+directory (except `README.md`) is a single rule with YAML frontmatter
+(`id`, `severity`, `applies-to` globs, `rationale-summary`) and a
+Markdown body (`## Rule`, `## Why`, `## How to check`,
+`## How to fix`). See [`docs/review-rules/README.md`](docs/review-rules/README.md)
+for the schema.
+
+When a code review surfaces a convention worth enforcing across
+future PRs, codify it as a rule in that directory rather than as a
+freeform note here. The schema is what lets a review-agent (or a
+human reviewer) discover and apply rules mechanically.
+
+Current rules:
+
+- **dependency-pinning** (`must`): all version specifiers in
+  `package.json` must be exact semver strings — no `^`, `~`, `latest`,
+  or other ranges. Bumps are deliberate, reviewable PRs.
