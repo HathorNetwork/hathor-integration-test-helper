@@ -66,10 +66,10 @@ For each changed `bun.lock`:
 
 ## How to fix
 
-1. Replace the offending range with the exact version currently
-   resolved in `bun.lock` (or the explicit version you intend to
-   adopt).
-2. Run `bun install` to refresh the lockfile.
+1. Update the offending range in `package.json` to the exact
+   version currently resolved in `bun.lock` (or the explicit
+   version you intend to adopt).
+2. Run `bun install` — `bun.lock` updates to match the manifest.
 3. Run `bun run check` to confirm nothing regressed.
 4. Commit `package.json` and `bun.lock` together.
 
