@@ -35,7 +35,12 @@ export interface AppConfig {
 export interface ConfigWarning {
   readonly event: "config.using_default_url" | "config.using_default_secret";
   readonly key: string;
-  readonly defaultValue: string;
+  /**
+   * Carried for `config.using_default_url` so operators see which URL
+   * the service fell back to. Omitted for `config.using_default_secret`
+   * — even test-only credentials shouldn't appear in CI logs.
+   */
+  readonly defaultValue?: string;
 }
 
 export interface LoadConfigOptions {
@@ -71,7 +76,7 @@ function parseIntEnv(
   issues: string[],
   constraints: IntConstraint = {},
 ): number {
-  const raw = env[key] ?? fallback;
+  const raw = (env[key] ?? fallback).trim();
   if (!/^-?\d+$/.test(raw)) {
     issues.push(`${key} must be an integer, got "${raw}"`);
     return Number.NaN;
@@ -100,7 +105,7 @@ function parseBigIntEnv(
   issues: string[],
   constraints: BigIntConstraint = {},
 ): bigint {
-  const raw = env[key] ?? fallback;
+  const raw = (env[key] ?? fallback).trim();
   if (!/^-?\d+$/.test(raw)) {
     issues.push(`${key} must be an integer string, got "${raw}"`);
     return 0n;
@@ -139,10 +144,8 @@ function parseOptionalTrimmedString(
 }
 
 function defaultOnWarning(warning: ConfigWarning): void {
-  logger.warn({
-    event: warning.event,
-    meta: { key: warning.key, defaultValue: warning.defaultValue },
-  });
+  const { event, ...rest } = warning;
+  logger.warn({ event, meta: rest });
 }
 
 export function loadConfig(
@@ -273,14 +276,12 @@ export function loadConfig(
     onWarning({
       event: "config.using_default_secret",
       key: "WALLET_PASSWORD",
-      defaultValue: WALLET_PASSWORD_DEFAULT,
     });
   }
   if (!WALLET_PIN_CODE_RAW) {
     onWarning({
       event: "config.using_default_secret",
       key: "WALLET_PIN_CODE",
-      defaultValue: WALLET_PIN_CODE_DEFAULT,
     });
   }
 

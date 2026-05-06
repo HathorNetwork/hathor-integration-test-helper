@@ -18,6 +18,28 @@ describe("buildTestPortCandidates", () => {
     const b = buildTestPortCandidates(4, 8);
     expect(a).toEqual(b);
   });
+
+  test("does not emit duplicate ports when maxFallbacks > range", () => {
+    // config.TEST_PORT_FALLBACK_SPAN defaults to 1000; asking for 10000
+    // candidates would wrap and produce duplicates without the cap.
+    const candidates = buildTestPortCandidates(0, 10_000);
+    expect(new Set(candidates).size).toBe(candidates.length);
+  });
+
+  test("rejects malformed JEST_WORKER_ID via inferWorkerId", () => {
+    const orig = process.env.JEST_WORKER_ID;
+    try {
+      // parseInt("1x", 10) returns 1, which would offset every "1x"
+      // worker onto the same range as a real worker 1. The regex guard
+      // falls back to workerId=0 instead.
+      process.env.JEST_WORKER_ID = "1x";
+      const candidates = buildTestPortCandidates(undefined, 2);
+      expect(candidates[1]).toBe(config.TEST_PORT_FALLBACK_START);
+    } finally {
+      if (orig === undefined) delete process.env.JEST_WORKER_ID;
+      else process.env.JEST_WORKER_ID = orig;
+    }
+  });
 });
 
 function eaddrinuse(): Error & { code: string } {

@@ -117,6 +117,32 @@ describe("loadConfig", () => {
     ).toBe(true);
   });
 
+  test("trims whitespace from numeric env values before validation", () => {
+    const cfg = loadConfig({ PORT: "  3030  ", UTXO_SPLIT_AMOUNT: "  500\n" }, noWarn);
+    expect(cfg.PORT).toBe(3030);
+    expect(cfg.UTXO_SPLIT_AMOUNT).toBe(500n);
+  });
+
+  test("redacts default values for secret warnings", () => {
+    const captured: ConfigWarning[] = [];
+    loadConfig({}, { onWarning: (w) => captured.push(w) });
+    const secrets = captured.filter(
+      (w) => w.event === "config.using_default_secret",
+    );
+    expect(secrets.length).toBeGreaterThan(0);
+    for (const w of secrets) {
+      expect(w.defaultValue).toBeUndefined();
+    }
+  });
+
+  test("keeps default values on URL warnings (informative, not secret)", () => {
+    const captured: ConfigWarning[] = [];
+    loadConfig({}, { onWarning: (w) => captured.push(w) });
+    const urls = captured.filter((w) => w.event === "config.using_default_url");
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.every((w) => typeof w.defaultValue === "string")).toBe(true);
+  });
+
   test("treats whitespace-only wallet credentials as fallback", () => {
     const captured: ConfigWarning[] = [];
     const cfg = loadConfig(

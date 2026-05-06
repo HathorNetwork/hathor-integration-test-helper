@@ -17,8 +17,19 @@ function inferWorkerId(): number {
   const fromNode = process.env.JEST_WORKER_ID;
   const fromCi = process.env.CI_NODE_INDEX;
 
-  const raw = fromNode ?? fromCi;
+  const raw = (fromNode ?? fromCi)?.trim();
   if (raw === undefined || raw === "") return 0;
+
+  // parseInt would silently accept "1x" / "01foo" as 1 — collapsing every
+  // worker onto the same port range. Require the entire string to be a
+  // run of digits before parsing.
+  if (!/^\d+$/.test(raw)) {
+    logger.warn({
+      event: "test_server.invalid_worker_id",
+      meta: { raw, fallbackWorkerId: 0 },
+    });
+    return 0;
+  }
 
   const parsed = Number.parseInt(raw, 10);
   if (Number.isSafeInteger(parsed) && parsed >= 0) {
@@ -26,7 +37,7 @@ function inferWorkerId(): number {
   }
   logger.warn({
     event: "test_server.invalid_worker_id",
-    meta: { raw, fallbackWorkerId: 0 },
+    meta: { raw, fallbackWorkerId: 0, reason: "unsafe_integer" },
   });
   return 0;
 }
@@ -44,7 +55,11 @@ export function buildTestPortCandidates(
   const range = config.TEST_PORT_FALLBACK_SPAN;
   const baseOffset = workerId % range;
 
-  for (let i = 0; i < maxFallbacks; i++) {
+  // Cap to `range` so we never emit duplicates: the modulo wraps at
+  // `range`, and asking for more iterations than that would just retry
+  // the same ports (extra log noise + slower startup).
+  const effectiveMax = Math.min(maxFallbacks, range);
+  for (let i = 0; i < effectiveMax; i++) {
     const candidate = config.TEST_PORT_FALLBACK_START + ((baseOffset + i) % range);
     if (candidate === config.PORT) continue;
     candidates.push(candidate);
