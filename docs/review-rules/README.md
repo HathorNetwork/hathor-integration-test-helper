@@ -77,3 +77,7 @@ agent's outer loop.
 - [`dependency-pinning`](dependency-pinning.md) — Pin all dependency
   versions to defend against supply-chain attacks via floating
   semver ranges.
+- [`github-actions-pinning`](github-actions-pinning.md) — Pin every
+  `uses:` reference in workflows and composite actions to a
+  40-character commit SHA with a `# <version>` comment, so mutable
+  tags cannot be re-pointed at malicious code.

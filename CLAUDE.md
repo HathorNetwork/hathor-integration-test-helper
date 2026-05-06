@@ -59,3 +59,7 @@ Current rules:
 - **dependency-pinning** (`must`): all version specifiers in
   `package.json` must be exact semver strings — no `^`, `~`, `latest`,
   or other ranges. Bumps are deliberate, reviewable PRs.
+- **github-actions-pinning** (`must`): every `uses:` in
+  `.github/workflows/` and `.github/actions/` must pin to a 40-char
+  commit SHA with a `# <version>` comment so Dependabot can bump
+  SHA and label in lockstep.
