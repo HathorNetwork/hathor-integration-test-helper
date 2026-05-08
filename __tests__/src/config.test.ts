@@ -98,6 +98,26 @@ describe("loadConfig", () => {
     expect(captured).toHaveLength(0);
   });
 
+  test("rejects unparseable HATHOR_NODE_URL at startup", () => {
+    expect(() => loadConfig({ HATHOR_NODE_URL: "not a url" })).toThrow(
+      ConfigError,
+    );
+  });
+
+  test("rejects HATHOR_NODE_URL without an http(s) scheme", () => {
+    // WHATWG URL parses "localhost:8083" with `localhost:` as scheme;
+    // the http/https guard is what catches the missing protocol.
+    expect(() => loadConfig({ HATHOR_NODE_URL: "localhost:8083" })).toThrow(
+      ConfigError,
+    );
+  });
+
+  test("rejects TX_MINING_URL with a non-http scheme", () => {
+    expect(() =>
+      loadConfig({ TX_MINING_URL: "ftp://miner.example/" }),
+    ).toThrow(ConfigError);
+  });
+
   test("warns when wallet credentials fall back to test defaults", () => {
     const captured: ConfigWarning[] = [];
     loadConfig({}, { onWarning: (w) => captured.push(w) });

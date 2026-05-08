@@ -143,6 +143,29 @@ function parseOptionalTrimmedString(
   return value ? value : undefined;
 }
 
+function parseOptionalUrl(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  issues: string[],
+): string | undefined {
+  const raw = env[key]?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    issues.push(`${key} must be an absolute http(s) URL, got "${raw}"`);
+    return undefined;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    issues.push(`${key} must use http or https scheme, got "${raw}"`);
+    return undefined;
+  }
+  return raw;
+}
+
 function defaultOnWarning(warning: ConfigWarning): void {
   const { event, ...rest } = warning;
   logger.warn({ event, meta: rest });
@@ -240,8 +263,8 @@ export function loadConfig(
     );
   }
 
-  const HATHOR_NODE_URL_RAW = env.HATHOR_NODE_URL?.trim();
-  const TX_MINING_URL_RAW = env.TX_MINING_URL?.trim();
+  const HATHOR_NODE_URL_RAW = parseOptionalUrl(env, "HATHOR_NODE_URL", issues);
+  const TX_MINING_URL_RAW = parseOptionalUrl(env, "TX_MINING_URL", issues);
   const HATHOR_NODE_URL_DEFAULT = "http://localhost:8083/v1a/";
   const TX_MINING_URL_DEFAULT = "http://localhost:8035/";
   const HATHOR_NODE_URL = HATHOR_NODE_URL_RAW || HATHOR_NODE_URL_DEFAULT;
