@@ -148,7 +148,7 @@ function parseOptionalUrl(
   key: string,
   issues: string[],
 ): string | undefined {
-  const raw = env[key]?.trim();
+  const raw = parseOptionalTrimmedString(env, key);
   if (!raw) {
     return undefined;
   }
@@ -270,8 +270,8 @@ export function loadConfig(
   const HATHOR_NODE_URL = HATHOR_NODE_URL_RAW || HATHOR_NODE_URL_DEFAULT;
   const TX_MINING_URL = TX_MINING_URL_RAW || TX_MINING_URL_DEFAULT;
 
-  const WALLET_PASSWORD_RAW = env.WALLET_PASSWORD?.trim();
-  const WALLET_PIN_CODE_RAW = env.WALLET_PIN_CODE?.trim();
+  const WALLET_PASSWORD_RAW = parseOptionalTrimmedString(env, "WALLET_PASSWORD");
+  const WALLET_PIN_CODE_RAW = parseOptionalTrimmedString(env, "WALLET_PIN_CODE");
   const WALLET_PASSWORD_DEFAULT = "test-password";
   const WALLET_PIN_CODE_DEFAULT = "123456";
   const WALLET_PASSWORD = WALLET_PASSWORD_RAW || WALLET_PASSWORD_DEFAULT;
