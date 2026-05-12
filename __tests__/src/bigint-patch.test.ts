@@ -1,5 +1,12 @@
 import { test, expect } from "bun:test";
+import { resolve } from "node:path";
 import { JSONBigInt } from "@hathor/wallet-lib/lib/utils/bigint";
+
+const PATCHED_BIGINT_PATH = resolve(
+  import.meta.dir,
+  "../../node_modules/@hathor/wallet-lib/lib/utils/bigint.js",
+);
+const PATCHED_FRAGMENT = "Failed to parse String to BigInt";
 
 /**
  * Tests for the wallet-lib BigInt-reviver compatibility patch.
@@ -10,7 +17,7 @@ import { JSONBigInt } from "@hathor/wallet-lib/lib/utils/bigint";
  * SyntaxError-message allowlist with Bun's specific wording so that
  * `JSONBigInt.parse` does not re-throw on floats or scientific notation.
  *
- * Two kinds of tests live here:
+ * Three kinds of tests live here:
  *
  *   1. A sentinel test that verifies Bun is still throwing the exact
  *      SyntaxError wording our patch expects. If a future Bun release
@@ -18,7 +25,14 @@ import { JSONBigInt } from "@hathor/wallet-lib/lib/utils/bigint";
  *      instructions on how to update the patch — instead of every
  *      JSONBigInt.parse call surfacing as an opaque crash at runtime.
  *
- *   2. Scenario tests covering the parse behaviors the rest of the
+ *   2. A sentinel test that verifies the patch is actually present in
+ *      node_modules. If wallet-lib is upgraded and the patch in
+ *      patches/ no longer applies (mismatched version key, or upstream
+ *      moved/renamed the catch block), `bun install` would print a
+ *      patch-apply warning that is easy to scroll past — this test
+ *      surfaces the same failure with explicit fix steps.
+ *
+ *   3. Scenario tests covering the parse behaviors the rest of the
  *      service depends on (integers preserved as numbers, floats and
  *      scientific notation handled gracefully, unsafe-range integers
  *      promoted to bigint).
@@ -73,6 +87,66 @@ test("[sentinel] Bun's BigInt SyntaxError wording matches the patch's allowlist"
       ].join("\n"),
     );
   }
+});
+
+test("[sentinel] wallet-lib BigInt patch is applied in node_modules", async () => {
+  // Read the upstream file directly. If the patch in patches/ failed to
+  // apply — usually because wallet-lib was upgraded and the patch key
+  // `@hathor/wallet-lib@<version>` no longer matches the installed
+  // version — `bun install` will have left the upstream file untouched
+  // and emitted a warning that's easy to miss. This test surfaces that
+  // state as a hard failure in CI.
+  const file = Bun.file(PATCHED_BIGINT_PATH);
+
+  if (!(await file.exists())) {
+    throw new Error(
+      [
+        "",
+        "wallet-lib's bigint.js is missing from node_modules:",
+        `  ${PATCHED_BIGINT_PATH}`,
+        "",
+        "Either node_modules is in a bad state or wallet-lib reorganized",
+        "its file layout. Run `bun install` to restore; if the file path",
+        "actually changed in a new wallet-lib version, regenerate the patch",
+        "and update PATCHED_BIGINT_PATH in this test.",
+        "",
+      ].join("\n"),
+    );
+  }
+
+  const contents = await file.text();
+  if (contents.includes(PATCHED_FRAGMENT)) {
+    return;
+  }
+
+  throw new Error(
+    [
+      "",
+      "The wallet-lib BigInt patch is NOT applied to node_modules.",
+      `  Looking for: "${PATCHED_FRAGMENT}"`,
+      `  In:          ${PATCHED_BIGINT_PATH}`,
+      "",
+      "Without this patch, every JSONBigInt.parse() call on a float or",
+      "scientific-notation number on Bun re-throws as a cryptic",
+      "'unexpected error in bigIntReviver' deep inside wallet-lib.",
+      "",
+      "Most likely cause: wallet-lib was upgraded (e.g. 3.0.1 → 3.0.2)",
+      "and the patch key in package.json's `patchedDependencies` no",
+      "longer matches the installed version, so `bun install` skipped",
+      "the patch. Check the install output for a patch-apply warning.",
+      "",
+      "To fix:",
+      "  1. Note the wallet-lib version in package.json's `dependencies`",
+      "  2. Regenerate the patch against that version:",
+      "       bun patch @hathor/wallet-lib@<version>",
+      "       # edit node_modules/@hathor/wallet-lib/lib/utils/bigint.js",
+      "       # add Bun's SyntaxError wording to the catch allowlist",
+      "       bun patch --commit node_modules/@hathor/wallet-lib",
+      "  3. Delete the obsolete patches/@hathor%2Fwallet-lib@*.patch file",
+      "  4. Re-run this test to confirm",
+      "",
+    ].join("\n"),
+  );
 });
 
 test("parses float numbers without crashing", () => {
