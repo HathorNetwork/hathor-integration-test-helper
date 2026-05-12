@@ -19,5 +19,8 @@
   },
   "dependencies": {
     "@hathor/wallet-lib": "3.0.1"
+  },
+  "patchedDependencies": {
+    "@hathor/wallet-lib@3.0.1": "patches/@hathor%2Fwallet-lib@3.0.1.patch"
   }
 }

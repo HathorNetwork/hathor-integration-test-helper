@@ -1,20 +1,78 @@
-import { test, expect, beforeAll } from "bun:test";
+import { test, expect } from "bun:test";
 import { JSONBigInt } from "@hathor/wallet-lib/lib/utils/bigint";
-import { applyWalletLibBigIntPatch } from "../../src/bigint-patch";
 
 /**
- * Tests for the Bun/JSC BigInt reviver replacement.
+ * Tests for the wallet-lib BigInt-reviver compatibility patch.
  *
- * wallet-lib's JSONBigInt.parse runs every JSON number through BigInt().
- * Floats and scientific notation (e.g. "1.5", "1e2") cause BigInt() to throw
- * a SyntaxError. The library only matches V8 error messages, so on Bun/JSC
- * it logs an error and re-throws. We replace the reviver entirely so the
- * JSC case is handled silently — matching V8 behavior.
+ * The patch itself lives at `patches/@hathor%2Fwallet-lib@3.0.1.patch`
+ * and is applied at install time by `bun install` (registered via
+ * `patchedDependencies` in package.json). It extends the upstream
+ * SyntaxError-message allowlist with Bun's specific wording so that
+ * `JSONBigInt.parse` does not re-throw on floats or scientific notation.
  *
- * The real patch is applied once in beforeAll before running assertions.
+ * Two kinds of tests live here:
+ *
+ *   1. A sentinel test that verifies Bun is still throwing the exact
+ *      SyntaxError wording our patch expects. If a future Bun release
+ *      changes that wording, this test fails first — with explicit
+ *      instructions on how to update the patch — instead of every
+ *      JSONBigInt.parse call surfacing as an opaque crash at runtime.
+ *
+ *   2. Scenario tests covering the parse behaviors the rest of the
+ *      service depends on (integers preserved as numbers, floats and
+ *      scientific notation handled gracefully, unsafe-range integers
+ *      promoted to bigint).
  */
-beforeAll(() => {
-  applyWalletLibBigIntPatch();
+
+test("[sentinel] Bun's BigInt SyntaxError wording matches the patch's allowlist", () => {
+  // Trigger BigInt() directly — not via JSONBigInt.parse — so the
+  // diagnostic this test prints stays focused on the engine behavior
+  // rather than the wallet-lib call stack.
+  let actualMessage: string | undefined;
+  try {
+    BigInt("1.5");
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) {
+      throw new Error(
+        `BigInt("1.5") threw a non-SyntaxError on Bun ${Bun.version}: ` +
+          `${(e as Error).constructor.name}: ${(e as Error).message}`,
+      );
+    }
+    actualMessage = e.message;
+  }
+  if (actualMessage === undefined) {
+    throw new Error(
+      `BigInt("1.5") did not throw on Bun ${Bun.version}; the patch ` +
+        `assumes a SyntaxError. Re-evaluate whether the patch is still needed.`,
+    );
+  }
+
+  const expectedMessage = "Failed to parse String to BigInt";
+  if (actualMessage !== expectedMessage) {
+    throw new Error(
+      [
+        "",
+        "Bun's BigInt SyntaxError wording has changed.",
+        `  Expected: "${expectedMessage}"`,
+        `  Got:      "${actualMessage}"`,
+        "",
+        "Our wallet-lib patch matches the SyntaxError message string",
+        "exactly. With the wording changed, every JSONBigInt.parse call",
+        "on a float or scientific-notation number will re-throw instead",
+        "of falling back to the JS-parsed number.",
+        "",
+        "To fix:",
+        "  1. Edit patches/@hathor%2Fwallet-lib@3.0.1.patch",
+        `  2. Add "${actualMessage}" to the SyntaxError message allowlist`,
+        "     in lib/utils/bigint.js",
+        "  3. Run `bun install` to reapply the patch",
+        "  4. Update the expectedMessage in this test to match",
+        "",
+        `Bun version: ${Bun.version}`,
+        "",
+      ].join("\n"),
+    );
+  }
 });
 
 test("parses float numbers without crashing", () => {
@@ -60,8 +118,7 @@ test("handles mixed types in a realistic websocket message", () => {
 });
 
 test("preserves MAX_SAFE_INTEGER as a number (boundary check)", () => {
-  // The reviver swallows BigInt() SyntaxErrors only for legitimate JSON
-  // numbers and only converts to BigInt when the value escapes the safe
+  // The reviver only promotes to BigInt when the value escapes the safe
   // integer range. A regression that flips < to <= would convert
   // MAX_SAFE_INTEGER itself to bigint and break wallet-lib callers
   // expecting a `number`.
