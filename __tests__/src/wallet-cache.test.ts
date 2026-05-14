@@ -13,7 +13,7 @@ import {
   __setGeneratorForTest,
   __resetCacheForTest,
 } from "../../src/wallet.cache";
-import { logger } from "../../src/logger";
+import { logger, type LogPayload } from "../../src/logger";
 import type { SimpleWallet } from "../../src/wallet.service";
 import { config } from "../../src/config";
 
@@ -81,7 +81,7 @@ describe("wallet.cache refill failure path", () => {
       return fakeWallet(refillCalls);
     });
 
-    const errorSpy = mock(() => {});
+    const errorSpy = mock((_p: LogPayload) => {});
     const originalError = logger.error;
     logger.error = errorSpy;
 
@@ -92,9 +92,7 @@ describe("wallet.cache refill failure path", () => {
       // retry that succeeds.
       await new Promise((r) => setTimeout(r, 50));
 
-      const events = errorSpy.mock.calls.map(
-        (args) => (args[0] as { event: string }).event,
-      );
+      const events = errorSpy.mock.calls.map((args) => args[0].event);
       expect(events).toContain("wallet_cache.refill_failed");
       expect(refillCalls).toBeGreaterThan(1);
     } finally {
@@ -113,7 +111,7 @@ describe("wallet.cache refill failure path", () => {
     });
 
     const originalError = logger.error;
-    logger.error = mock(() => {});
+    logger.error = mock((_p: LogPayload) => {});
 
     try {
       // First refill cycle (drain triggers it).

@@ -56,7 +56,7 @@ describe("handleMultisigWallet validation", () => {
   test("missing both params → 400 INVALID_REQUEST", async () => {
     const res = handleMultisigWallet(get("http://x/multisigWallet"));
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = (await res.json()) as { error: string; retryable: boolean };
     expect(body.error).toBe("INVALID_REQUEST");
     expect(body.retryable).toBe(false);
   });
