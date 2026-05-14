@@ -136,11 +136,10 @@ handler.
 - `isNaN(parseInt(...))` for either.
 - `participants < 1` or `numSignatures < 1`.
 - `numSignatures > participants`.
-- `participants > MAX_MULTISIG_PARTICIPANTS` — **addition vs donor**.
-  Constant in this file, initial value `15`. Rationale: cheap
-  defensive cap; without it `participants=10000` happily burns CPU
-  generating seeds (this is a test helper, not a production
-  service). Cheap to remove if a reviewer disagrees.
+
+(No upper bound on `participants`; matches donor behavior. A caller
+asking for `participants=10000` will pay the seed-generation cost
+themselves on a synchronous request.)
 
 Each handler records its own `genTime` from `performance.now()` and
 includes it in the success response — matches donor and is useful
@@ -262,9 +261,6 @@ test that mocks a route to throw.
    numeric `latencyMs`, `status:200`.
 6. `curl localhost:3020/live` (no header) → same log line shape but
    `testName:"unknown"`.
-7. `curl 'localhost:3020/multisigWallet?participants=16&numSignatures=2'`
-   → 400 `INVALID_REQUEST` (cap; only if reviewer accepts the
-   `MAX_MULTISIG_PARTICIPANTS=15` addition — otherwise drop this AC).
 
 ## Branch and commit
 
