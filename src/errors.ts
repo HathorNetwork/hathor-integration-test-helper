@@ -11,7 +11,8 @@ export type ErrorCode =
   | "UTXO_STALE"
   | "FUND_TIMEOUT"
   | "INVALID_REQUEST"
-  | "SERVICE_NOT_READY";
+  | "SERVICE_NOT_READY"
+  | "INTERNAL_ERROR";
 
 /**
  * Single source of truth pinning each ErrorCode to its HTTP status and
@@ -19,6 +20,10 @@ export type ErrorCode =
  * adding a new ErrorCode without a row a compile error — closing the
  * loop with the union and preventing wire-contract drift between the
  * subclasses and the RFC.
+ *
+ * INTERNAL_ERROR is the catch-all used by the HTTP observability layer
+ * for unexpected throws from handlers. It is intentionally not exposed
+ * via a subclass — domain code shouldn't construct it.
  */
 const ERROR_TABLE = {
   POOL_EXHAUSTED:    { status: 409, retryable: true  },
@@ -27,6 +32,7 @@ const ERROR_TABLE = {
   FUND_TIMEOUT:      { status: 409, retryable: true  },
   SERVICE_NOT_READY: { status: 503, retryable: true  },
   INVALID_REQUEST:   { status: 400, retryable: false },
+  INTERNAL_ERROR:    { status: 500, retryable: false },
 } as const satisfies Record<ErrorCode, { status: number; retryable: boolean }>;
 
 /** HTTP-facing metadata describing a known service-level failure. */

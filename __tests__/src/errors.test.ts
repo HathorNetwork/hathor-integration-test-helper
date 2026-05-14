@@ -79,4 +79,13 @@ describe("ServiceError taxonomy", () => {
     const err = new UtxoStaleError("stale", { cause });
     expect(err.cause).toBe(cause);
   });
+
+  test("INTERNAL_ERROR descriptor: 500, not retryable", () => {
+    const err = new ServiceError("INTERNAL_ERROR", "boom");
+    expect(err.descriptor).toEqual({
+      code: "INTERNAL_ERROR",
+      status: 500,
+      retryable: false,
+    });
+  });
 });
