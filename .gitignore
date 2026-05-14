@@ -38,3 +38,6 @@ firebase-debug.log
 
 # Implementation plans (ephemeral)
 docs/plans
+
+# Personal Claude Code overrides — never committed
+.claude/settings.local.json

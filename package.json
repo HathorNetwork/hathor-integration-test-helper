@@ -7,7 +7,7 @@
     "start": "bun run index.ts",
     "dev": "bun --hot run index.ts",
     "test": "bun run test:unit",
-    "test:unit": "for f in __tests__/*.test.ts; do bun test \"$f\" || exit 1; done",
+    "test:unit": "bun test __tests__/src",
     "typecheck": "bunx tsc --noEmit",
     "check": "bun run typecheck && bun run test:unit"
   },
@@ -19,5 +19,8 @@
   },
   "dependencies": {
     "@hathor/wallet-lib": "3.0.1"
+  },
+  "patchedDependencies": {
+    "@hathor/wallet-lib@3.0.1": "patches/@hathor%2Fwallet-lib@3.0.1.patch"
   }
 }
