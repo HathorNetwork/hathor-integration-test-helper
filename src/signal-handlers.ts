@@ -1,7 +1,11 @@
 import { logger } from "./logger";
 
 interface StoppableServer {
-  stop: () => void;
+  // Bun's Server.stop() is async since Bun 1.2 — it resolves once
+  // active connections have drained (or are forcibly closed). Awaiting
+  // it lets the shutdown try/catch capture in-flight rejections and
+  // prevents the drain delay from racing with an incomplete stop.
+  stop: () => void | Promise<void>;
 }
 
 interface ProcessLike {
@@ -40,13 +44,13 @@ export function setupSignalHandlers(
 
   let shuttingDown = false;
 
-  const shutdown = (signal: "SIGINT" | "SIGTERM") => {
+  const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
     if (shuttingDown) return;
     shuttingDown = true;
 
     logger.info({ event: "server.shutdown_requested", meta: { signal } });
     try {
-      server.stop();
+      await server.stop();
     } catch (err) {
       logger.error({
         event: "server.shutdown_failed",
@@ -62,8 +66,12 @@ export function setupSignalHandlers(
     }, drainMs);
   };
 
-  processRef.on("SIGINT", () => shutdown("SIGINT"));
-  processRef.on("SIGTERM", () => shutdown("SIGTERM"));
+  processRef.on("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+  processRef.on("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
 
   return { shutdown };
 }
