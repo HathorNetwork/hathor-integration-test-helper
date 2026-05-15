@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import {
   handleSimpleWallet,
   handleMultisigWallet,
@@ -27,6 +27,14 @@ beforeAll(() => {
   __resetCacheForTest();
   __setGeneratorForTest(stubWallet);
   initializeCache();
+});
+
+// bun:test runs all unit files in a single process. Restore the real
+// generator and clear the cache so later suites aren't order-dependent
+// on this file's setup.
+afterAll(() => {
+  __setGeneratorForTest(null);
+  __resetCacheForTest();
 });
 
 describe("handleLive", () => {

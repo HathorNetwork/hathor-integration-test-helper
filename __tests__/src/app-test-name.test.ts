@@ -5,6 +5,7 @@ import {
   beforeEach,
   afterEach,
   beforeAll,
+  afterAll,
   mock,
 } from "bun:test";
 import { createRoutes, withObservability } from "../../src/app";
@@ -42,6 +43,15 @@ beforeAll(() => {
   __resetCacheForTest();
   __setGeneratorForTest(stubWallet);
   initializeCache();
+});
+
+// bun:test runs all unit files in a single process, so module-level
+// state (the wallet cache's generator binding, in particular) leaks
+// across files. Restore the real generator after this suite to keep
+// later tests order-independent.
+afterAll(() => {
+  __setGeneratorForTest(null);
+  __resetCacheForTest();
 });
 
 beforeEach(() => {
