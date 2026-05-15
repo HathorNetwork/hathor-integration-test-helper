@@ -34,6 +34,11 @@ function refillCacheAsync(): void {
   if (isRefilling) return;
   if (simpleWalletCache.length >= config.SIMPLE_WALLET_CACHE_SIZE) return;
   isRefilling = true;
+  // One retry per refill cycle. After the retry fails (or succeeds),
+  // the cycle ends — a subsequent getSimpleWalletFromCache() call
+  // can start a fresh cycle. Without this flag, a persistently
+  // failing generator would spin-loop via setImmediate.
+  let retryUsed = false;
 
   const refillOne = () => {
     if (simpleWalletCache.length >= config.SIMPLE_WALLET_CACHE_SIZE) {
@@ -49,11 +54,14 @@ function refillCacheAsync(): void {
         event: "wallet_cache.refill_failed",
         meta: { error: message },
       });
-      isRefilling = false;
-      // Single retry preserves self-healing without a hot error loop:
-      // if the next attempt also throws, refillOne's own try/catch will
-      // emit the same log line again and stop until the next consumer
-      // call triggers another retry chain.
+      if (retryUsed) {
+        isRefilling = false;
+        return;
+      }
+      retryUsed = true;
+      // Keep isRefilling true so a concurrent consumer call doesn't
+      // launch a second chain on top of this one. The retry runs
+      // inside this cycle.
       setImmediate(refillOne);
     }
   };

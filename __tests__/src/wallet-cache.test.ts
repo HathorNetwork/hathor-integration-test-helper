@@ -100,7 +100,7 @@ describe("wallet.cache refill failure path", () => {
     }
   });
 
-  test("repeated failures don't lock the cache (isRefilling clears each cycle)", async () => {
+  test("a single cycle of persistent failures caps at one retry", async () => {
     __setGeneratorForTest(() => fakeWallet(0));
     initializeCache();
 
@@ -114,18 +114,40 @@ describe("wallet.cache refill failure path", () => {
     logger.error = mock((_p: LogPayload) => {});
 
     try {
-      // First refill cycle (drain triggers it).
+      // Triggers refillCacheAsync → setImmediate(refillOne) chain.
       getSimpleWalletFromCache();
-      await new Promise((r) => setTimeout(r, 25));
-      const firstCycle = refillCalls;
+      await new Promise((r) => setTimeout(r, 50));
+      // Exactly two attempts: initial + one retry. No hot loop.
+      expect(refillCalls).toBe(2);
+    } finally {
+      logger.error = originalError;
+    }
+  });
 
-      // The single-retry policy means refillCalls increments at least
-      // twice per drain: the initial attempt + one retry. If
-      // isRefilling were stuck true after the first failure, the next
-      // drain wouldn't trigger any new attempts.
+  test("after a failed cycle, a fresh consumer call starts a new cycle", async () => {
+    __setGeneratorForTest(() => fakeWallet(0));
+    initializeCache();
+
+    let refillCalls = 0;
+    __setGeneratorForTest(() => {
+      refillCalls++;
+      throw new Error("always");
+    });
+
+    const originalError = logger.error;
+    logger.error = mock((_p: LogPayload) => {});
+
+    try {
       getSimpleWalletFromCache();
-      await new Promise((r) => setTimeout(r, 25));
-      expect(refillCalls).toBeGreaterThan(firstCycle);
+      await new Promise((r) => setTimeout(r, 50));
+      const afterFirstCycle = refillCalls;
+      expect(afterFirstCycle).toBe(2);
+
+      // Second consumer call must be able to launch a brand-new cycle
+      // (isRefilling cleared after the retry exhausted).
+      getSimpleWalletFromCache();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(refillCalls).toBe(afterFirstCycle + 2);
     } finally {
       logger.error = originalError;
     }
