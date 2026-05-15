@@ -75,6 +75,20 @@ describe("handleMultisigWallet validation", () => {
     expect(res.status).toBe(400);
   });
 
+  test("trailing-garbage values (parseInt truncation trap) → 400", async () => {
+    const res = handleMultisigWallet(
+      get("http://x/multisigWallet?participants=2abc&numSignatures=2"),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("decimal values → 400", async () => {
+    const res = handleMultisigWallet(
+      get("http://x/multisigWallet?participants=2.5&numSignatures=1"),
+    );
+    expect(res.status).toBe(400);
+  });
+
   test("participants < 1 → 400", async () => {
     const res = handleMultisigWallet(
       get("http://x/multisigWallet?participants=0&numSignatures=1"),

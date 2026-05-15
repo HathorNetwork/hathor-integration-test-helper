@@ -52,16 +52,24 @@ export function handleMultisigWallet(req: Request): Response {
     );
   }
 
-  const participants = Number.parseInt(participantsParam, 10);
-  const numSignatures = Number.parseInt(numSignaturesParam, 10);
-
-  if (Number.isNaN(participants) || Number.isNaN(numSignatures)) {
+  // Strict integer match: parseInt would silently accept "2abc" or "1.5"
+  // (truncating to 2 and 1 respectively), which lets garbage flow into
+  // generateMultisigWallet. Require the whole string to be digits before
+  // parsing — same pattern test-server.ts uses for worker-id validation.
+  const intPattern = /^\d+$/;
+  if (
+    !intPattern.test(participantsParam) ||
+    !intPattern.test(numSignaturesParam)
+  ) {
     return jsonErrorFromService(
       new InvalidRequestError(
         "participants and numSignatures must be valid integers",
       ),
     );
   }
+
+  const participants = Number(participantsParam);
+  const numSignatures = Number(numSignaturesParam);
 
   if (participants < 1) {
     return jsonErrorFromService(
