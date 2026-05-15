@@ -61,4 +61,18 @@ describe("generateMultisigWallet", () => {
       expect(isValidHathorAddress(addr)).toBe(true);
     }
   });
+
+  test("each wallet's shared arrays are independent copies (no aliasing)", () => {
+    const w = generateMultisigWallet(3, 2);
+    expect(w[0]!.addresses).not.toBe(w[1]!.addresses);
+    expect(w[0]!.multisigDebugData.words).not.toBe(
+      w[1]!.multisigDebugData.words,
+    );
+    expect(w[0]!.multisigDebugData.pubkeys).not.toBe(
+      w[1]!.multisigDebugData.pubkeys,
+    );
+    // Mutating one wallet's arrays must not affect the others.
+    w[0]!.addresses[0] = "MUTATED";
+    expect(w[1]!.addresses[0]).not.toBe("MUTATED");
+  });
 });

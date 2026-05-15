@@ -94,14 +94,21 @@ export function generateMultisigWallet(
     sharedAddresses.push(info.base58);
   }
 
+  // Each returned wallet gets its own copy of the shared arrays. The
+  // P2SH addresses, pubkey list, and seed list are identical across
+  // participants by design, but sharing the underlying array
+  // references would let a downstream mutation on one wallet leak
+  // into the others. Spreading is O(N × ADDRESS_COUNT) and run at
+  // generation time, so the cost is negligible — but the aliasing
+  // surprise it prevents would be a nasty heisenbug.
   return allWords.map((words) => ({
     words,
-    addresses: sharedAddresses,
+    addresses: [...sharedAddresses],
     multisigDebugData: {
-      words: allWords,
+      words: [...allWords],
       total: participants,
       numSignatures,
-      pubkeys: sortedPubkeys,
+      pubkeys: [...sortedPubkeys],
     },
   }));
 }
