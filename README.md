@@ -34,9 +34,9 @@ and PR conventions.
 ## Running as a wallet provider
 
 The wallet endpoints can stand in for hathor-wallet-lib's static precalculated
-wallet pool: `/simpleWallet` returns the `{ words, addresses }` shape the Lib
-derives its precalculated wallets into. This serves wallet material only —
-funding stays Lib-managed.
+wallet pool: `/simpleWallet` returns `{ words, addresses }` plus a `retrieveTimeMs`
+latency field (and `/multisigWallet` returns `{ wallets, retrieveTimeMs }`). This
+serves wallet material only — funding stays Lib-managed.
 
 ```sh
 docker build -t hathor-ith .
