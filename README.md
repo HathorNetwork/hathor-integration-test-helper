@@ -30,3 +30,20 @@ bun run start    # boot the placeholder server
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the local quality gate
 and PR conventions.
+
+## Running as a wallet provider
+
+The wallet endpoints can stand in for hathor-wallet-lib's static precalculated
+wallet pool: `/simpleWallet` returns the `{ words, addresses }` shape the Lib
+derives its precalculated wallets into. This serves wallet material only —
+funding stays Lib-managed.
+
+```sh
+docker build -t hathor-ith .
+docker run --rm -p 3020:3020 hathor-ith
+```
+
+With no env supplied the image uses defaults kept equal to wallet-lib's
+integration constants (testnet, the privnet node/tx-mining URLs, and the genesis
+seed), so it is plug-and-play for the Lib CI. Override any at run time, e.g.
+`-e HATHOR_NODE_URL=...`.
