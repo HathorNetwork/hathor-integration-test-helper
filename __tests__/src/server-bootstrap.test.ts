@@ -40,8 +40,12 @@ beforeAll(() => {
   baseUrl = `http://localhost:${server.port}`;
 });
 
-afterAll(() => {
-  server.stop();
+afterAll(async () => {
+  // Bun's Server.stop() is async (>=1.2). Await it so teardown completes
+  // before the runner moves on and a rejecting stop surfaces instead of
+  // being silently dropped — mirroring the production shutdown in
+  // signal-handlers.ts.
+  await server.stop();
   __setGeneratorForTest(null);
   __resetCacheForTest();
 });
