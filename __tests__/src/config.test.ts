@@ -12,6 +12,17 @@ describe("loadConfig", () => {
     expect(cfg.REFILL_THRESHOLD).toBe(10);
   });
 
+  // Plug-and-play guarantee for the dockerized helper: an image started with
+  // NO env set must resolve the full set of hathor-wallet-lib-aligned network
+  // defaults, so it Just Works against the Lib's integration stack.
+  test("empty env yields the wallet-lib-aligned network defaults", () => {
+    const cfg = loadConfig({}, noWarn);
+    expect(cfg.NETWORK).toBe("testnet");
+    expect(cfg.HATHOR_NODE_URL).toBe("http://localhost:8083/v1a/");
+    expect(cfg.TX_MINING_URL).toBe("http://localhost:8035/");
+    expect(cfg.GENESIS_SEED_WORDS.split(" ")).toHaveLength(24);
+  });
+
   test("fails fast on invalid integer env", () => {
     expect(() =>
       loadConfig({
@@ -63,9 +74,41 @@ describe("loadConfig", () => {
 
     const cfg2 = loadConfig({ TX_MIN_WEIGHT: "   " }, noWarn);
     expect(cfg2.TX_MIN_WEIGHT).toBeUndefined();
+  });
 
-    const cfg3 = loadConfig({ GENESIS_SEED_WORDS: "   " }, noWarn);
-    expect(cfg3.GENESIS_SEED_WORDS).toBeUndefined();
+  // Canonical value mirrors hathor-wallet-lib
+  // __tests__/integration/configuration/test-constants.ts → WALLET_CONSTANTS.genesis.
+  // Pinned independently here so a drift in the config default fails loudly.
+  const LIB_GENESIS_SEED =
+    "avocado spot town typical traffic vault danger century property shallow divorce festival spend attack anchor afford rotate green audit adjust fade wagon depart level";
+
+  test("GENESIS_SEED_WORDS defaults to the wallet-lib genesis seed", () => {
+    const cfg = loadConfig({}, noWarn);
+    expect(cfg.GENESIS_SEED_WORDS).toBe(LIB_GENESIS_SEED);
+    expect(cfg.GENESIS_SEED_WORDS.split(" ")).toHaveLength(24);
+  });
+
+  test("blank GENESIS_SEED_WORDS falls back to the default", () => {
+    const cfg = loadConfig({ GENESIS_SEED_WORDS: "   " }, noWarn);
+    expect(cfg.GENESIS_SEED_WORDS).toBe(LIB_GENESIS_SEED);
+  });
+
+  test("an explicit GENESIS_SEED_WORDS overrides the default", () => {
+    const custom = "my own seed phrase";
+    const cfg = loadConfig({ GENESIS_SEED_WORDS: custom }, noWarn);
+    expect(cfg.GENESIS_SEED_WORDS).toBe(custom);
+  });
+
+  test("emits a using_default_secret warning when GENESIS_SEED_WORDS falls back", () => {
+    const captured: ConfigWarning[] = [];
+    loadConfig({}, { onWarning: (w) => captured.push(w) });
+    expect(
+      captured.some(
+        (w) =>
+          w.event === "config.using_default_secret" &&
+          w.key === "GENESIS_SEED_WORDS",
+      ),
+    ).toBe(true);
   });
 
   test("garbage in optional env still surfaces as a parse failure", () => {
@@ -92,6 +135,7 @@ describe("loadConfig", () => {
         TX_MINING_URL: "http://miner.example/",
         WALLET_PASSWORD: "explicit",
         WALLET_PIN_CODE: "explicit",
+        GENESIS_SEED_WORDS: "explicit seed",
       },
       { onWarning: (w) => captured.push(w) },
     );
@@ -166,7 +210,11 @@ describe("loadConfig", () => {
   test("treats whitespace-only wallet credentials as fallback", () => {
     const captured: ConfigWarning[] = [];
     const cfg = loadConfig(
-      { WALLET_PASSWORD: "   ", WALLET_PIN_CODE: "  " },
+      {
+        WALLET_PASSWORD: "   ",
+        WALLET_PIN_CODE: "  ",
+        GENESIS_SEED_WORDS: "explicit seed",
+      },
       { onWarning: (w) => captured.push(w) },
     );
     expect(cfg.WALLET_PASSWORD).toBe("test-password");
