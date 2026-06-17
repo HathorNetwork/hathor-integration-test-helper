@@ -10,9 +10,11 @@ import { InvalidRequestError } from "./errors";
  * are surfaced via `jsonErrorFromService` so the `{error, message,
  * retryable}` body shape stays consistent across the API.
  *
- * `genTime` is measured per request and included in the success body so
- * client-side test harnesses can attribute generation cost without
- * scraping logs.
+ * `retrieveTimeMs` is measured per request and included in the success
+ * body so client-side test harnesses can attribute the cost of obtaining
+ * a wallet without scraping logs. On the warm cache path this measures
+ * retrieval (~0ms); the real BIP39 derivation cost only surfaces on the
+ * synchronous empty-cache fallback — hence "retrieve", not "generate".
  */
 
 function nowMs(): number {
@@ -27,7 +29,7 @@ function elapsed(start: number): number {
 export function handleSimpleWallet(_req: Request): Response {
   const start = nowMs();
   const wallet = getSimpleWalletFromCache();
-  return Response.json({ ...wallet, genTime: elapsed(start) });
+  return Response.json({ ...wallet, retrieveTimeMs: elapsed(start) });
 }
 
 /**
@@ -90,7 +92,7 @@ export function handleMultisigWallet(req: Request): Response {
   }
 
   const wallets = generateMultisigWallet(participants, numSignatures);
-  return Response.json({ wallets, genTime: elapsed(start) });
+  return Response.json({ wallets, retrieveTimeMs: elapsed(start) });
 }
 
 /** GET /live — liveness probe. Always 200; readiness lives at /ready (PR3). */

@@ -56,17 +56,17 @@ describe("server bootstrap end-to-end", () => {
     expect(await res.json()).toEqual({ live: true });
   });
 
-  test("GET /simpleWallet → 24-word seed + 22 addresses + genTime", async () => {
+  test("GET /simpleWallet → 24-word seed + 22 addresses + retrieveTimeMs", async () => {
     const res = await fetch(`${baseUrl}/simpleWallet`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       words: string;
       addresses: string[];
-      genTime: number;
+      retrieveTimeMs: number;
     };
     expect(body.words.split(" ")).toHaveLength(24);
     expect(body.addresses).toHaveLength(22);
-    expect(typeof body.genTime).toBe("number");
+    expect(typeof body.retrieveTimeMs).toBe("number");
   });
 
   test("GET /multisigWallet happy path → wallets array", async () => {
