@@ -13,10 +13,14 @@ export interface SimpleWallet {
   addresses: string[];
 }
 
+// Mirrors the `multisigDebugData` field of wallet-lib's
+// `PrecalculatedWalletData` (hathor-wallet-lib
+// __tests__/integration/helpers/wallet-precalculation.helper.ts) so the
+// helper is a drop-in for the Lib's precalculated multisig wallets. Keep
+// these field names aligned with that contract.
 export interface MultisigDebugData {
-  words: string[];
   total: number;
-  numSignatures: number;
+  minSignatures: number;
   pubkeys: string[];
 }
 
@@ -95,19 +99,23 @@ export function generateMultisigWallet(
   }
 
   // Each returned wallet gets its own copy of the shared arrays. The
-  // P2SH addresses, pubkey list, and seed list are identical across
-  // participants by design, but sharing the underlying array
-  // references would let a downstream mutation on one wallet leak
-  // into the others. Spreading is O(N × ADDRESS_COUNT) and run at
-  // generation time, so the cost is negligible — but the aliasing
-  // surprise it prevents would be a nasty heisenbug.
+  // P2SH addresses and pubkey list are identical across participants by
+  // design, but sharing the underlying array references would let a
+  // downstream mutation on one wallet leak into the others. Spreading is
+  // O(N × ADDRESS_COUNT) and run at generation time, so the cost is
+  // negligible — but the aliasing surprise it prevents would be a nasty
+  // heisenbug.
+  //
+  // The full participant seed set is intentionally NOT embedded in each
+  // wallet's multisigDebugData: every returned wallet already carries its
+  // own `words`, so callers needing the whole set use `wallets.map(w =>
+  // w.words)` rather than receiving N duplicated copies.
   return allWords.map((words) => ({
     words,
     addresses: [...sharedAddresses],
     multisigDebugData: {
-      words: [...allWords],
       total: participants,
-      numSignatures,
+      minSignatures: numSignatures,
       pubkeys: [...sortedPubkeys],
     },
   }));

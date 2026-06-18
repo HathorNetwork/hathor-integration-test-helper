@@ -45,12 +45,31 @@ describe("generateMultisigWallet", () => {
     expect(w[0]!.multisigDebugData.pubkeys).toEqual(sorted);
   });
 
-  test("multisigDebugData carries total, numSignatures, and all participants' seeds", () => {
+  // Contract lock: this exact shape mirrors the `multisigDebugData` of
+  // wallet-lib's PrecalculatedWalletData
+  // (__tests__/integration/helpers/wallet-precalculation.helper.ts). If it
+  // drifts, the helper stops being a drop-in for the Lib — update the helper,
+  // not this test, unless the Lib's contract itself changed.
+  test("multisigDebugData is exactly { total, minSignatures, pubkeys }", () => {
     const w = generateMultisigWallet(3, 2);
-    expect(w[0]!.multisigDebugData.total).toBe(3);
-    expect(w[0]!.multisigDebugData.numSignatures).toBe(2);
-    expect(w[0]!.multisigDebugData.words).toHaveLength(3);
-    for (const seed of w[0]!.multisigDebugData.words) {
+    const debug = w[0]!.multisigDebugData;
+    expect(debug.total).toBe(3);
+    expect(debug.minSignatures).toBe(2);
+    expect(debug.pubkeys).toHaveLength(3);
+    // words[] dropped: it duplicated the whole seed set into every
+    // participant and is reconstructable from each wallet's own `words`.
+    expect(Object.keys(debug).sort()).toEqual([
+      "minSignatures",
+      "pubkeys",
+      "total",
+    ]);
+  });
+
+  test("the full seed set is still recoverable from per-wallet words", () => {
+    const w = generateMultisigWallet(3, 2);
+    const allSeeds = w.map((p) => p.words);
+    expect(allSeeds).toHaveLength(3);
+    for (const seed of allSeeds) {
       expect(seed.split(" ")).toHaveLength(24);
     }
   });
@@ -65,9 +84,6 @@ describe("generateMultisigWallet", () => {
   test("each wallet's shared arrays are independent copies (no aliasing)", () => {
     const w = generateMultisigWallet(3, 2);
     expect(w[0]!.addresses).not.toBe(w[1]!.addresses);
-    expect(w[0]!.multisigDebugData.words).not.toBe(
-      w[1]!.multisigDebugData.words,
-    );
     expect(w[0]!.multisigDebugData.pubkeys).not.toBe(
       w[1]!.multisigDebugData.pubkeys,
     );

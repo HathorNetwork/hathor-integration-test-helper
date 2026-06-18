@@ -16,7 +16,15 @@ export interface AppConfig {
   readonly PORT: number;
   readonly NETWORK: "testnet";
   readonly ADDRESS_COUNT: number;
-  readonly GENESIS_SEED_WORDS?: string;
+  /**
+   * Genesis wallet seed. Defaults to hathor-wallet-lib's integration genesis
+   * seed so the dockerized helper is plug-and-play for the Lib CI. Source of
+   * truth: hathor-wallet-lib
+   * `__tests__/integration/configuration/test-constants.ts` →
+   * `WALLET_CONSTANTS.genesis`. Not consumed at runtime yet (funding is a
+   * later milestone); defaulted now for forward-aligned deployment.
+   */
+  readonly GENESIS_SEED_WORDS: string;
   readonly HATHOR_NODE_URL: string;
   readonly TX_MINING_URL: string;
   readonly TX_MIN_WEIGHT?: number;
@@ -171,6 +179,16 @@ function defaultOnWarning(warning: ConfigWarning): void {
   logger.warn({ event, meta: rest });
 }
 
+/**
+ * Default genesis seed — kept byte-for-byte equal to hathor-wallet-lib's
+ * integration genesis wallet so the dockerized helper boots plug-and-play
+ * for the Lib CI. Canonical source: hathor-wallet-lib
+ * `__tests__/integration/configuration/test-constants.ts` →
+ * `WALLET_CONSTANTS.genesis`. If the Lib rotates this seed, update here.
+ */
+const GENESIS_SEED_WORDS_DEFAULT =
+  "avocado spot town typical traffic vault danger century property shallow divorce festival spend attack anchor afford rotate green audit adjust fade wagon depart level";
+
 export function loadConfig(
   env: NodeJS.ProcessEnv,
   options: LoadConfigOptions = {},
@@ -277,6 +295,13 @@ export function loadConfig(
   const WALLET_PASSWORD = WALLET_PASSWORD_RAW || WALLET_PASSWORD_DEFAULT;
   const WALLET_PIN_CODE = WALLET_PIN_CODE_RAW || WALLET_PIN_CODE_DEFAULT;
 
+  const GENESIS_SEED_WORDS_RAW = parseOptionalTrimmedString(
+    env,
+    "GENESIS_SEED_WORDS",
+  );
+  const GENESIS_SEED_WORDS =
+    GENESIS_SEED_WORDS_RAW || GENESIS_SEED_WORDS_DEFAULT;
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -307,13 +332,19 @@ export function loadConfig(
       key: "WALLET_PIN_CODE",
     });
   }
+  if (!GENESIS_SEED_WORDS_RAW) {
+    onWarning({
+      event: "config.using_default_secret",
+      key: "GENESIS_SEED_WORDS",
+    });
+  }
 
   return {
     SIMPLE_WALLET_CACHE_SIZE,
     PORT,
     NETWORK: "testnet",
     ADDRESS_COUNT: 22,
-    GENESIS_SEED_WORDS: parseOptionalTrimmedString(env, "GENESIS_SEED_WORDS"),
+    GENESIS_SEED_WORDS,
     HATHOR_NODE_URL,
     TX_MINING_URL,
     TX_MIN_WEIGHT,

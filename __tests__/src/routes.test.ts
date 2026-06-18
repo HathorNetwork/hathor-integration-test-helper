@@ -46,17 +46,17 @@ describe("handleLive", () => {
 });
 
 describe("handleSimpleWallet", () => {
-  test("returns 24-word seed + 22 addresses + numeric genTime", async () => {
+  test("returns 24-word seed + 22 addresses + numeric retrieveTimeMs", async () => {
     const res = handleSimpleWallet(get("http://x/simpleWallet"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       words: string;
       addresses: string[];
-      genTime: number;
+      retrieveTimeMs: number;
     };
     expect(body.words.split(" ")).toHaveLength(24);
     expect(body.addresses).toHaveLength(22);
-    expect(typeof body.genTime).toBe("number");
+    expect(typeof body.retrieveTimeMs).toBe("number");
   });
 });
 
@@ -120,17 +120,17 @@ describe("handleMultisigWallet validation", () => {
 });
 
 describe("handleMultisigWallet happy path", () => {
-  test("returns {wallets, genTime} with one entry per participant", async () => {
+  test("returns {wallets, retrieveTimeMs} with one entry per participant", async () => {
     const res = handleMultisigWallet(
       get("http://x/multisigWallet?participants=2&numSignatures=2"),
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       wallets: { addresses: string[]; multisigDebugData: { pubkeys: string[] } }[];
-      genTime: number;
+      retrieveTimeMs: number;
     };
     expect(body.wallets).toHaveLength(2);
     expect(body.wallets[0]!.addresses).toEqual(body.wallets[1]!.addresses);
-    expect(typeof body.genTime).toBe("number");
+    expect(typeof body.retrieveTimeMs).toBe("number");
   });
 });
