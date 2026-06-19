@@ -39,6 +39,13 @@ jobs:
         id: tags
         run: |
           version="${GITHUB_REF_NAME#v}"
+          # Reject anything that isn't a clean vMAJOR.MINOR.PATCH(-prerelease)
+          # tag, so a stray tag can't yield an invalid image tag or smuggle
+          # extra comma-separated tags into the publish list.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} is not a valid vMAJOR.MINOR.PATCH version. Refusing to publish."
+            exit 1
+          fi
           echo "tags=${IMAGE}:${version},${IMAGE}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
