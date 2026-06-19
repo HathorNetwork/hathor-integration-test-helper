@@ -39,10 +39,12 @@ jobs:
         id: tags
         run: |
           version="${GITHUB_REF_NAME#v}"
-          # Reject anything that isn't a clean vMAJOR.MINOR.PATCH(-prerelease)
-          # tag, so a stray tag can't yield an invalid image tag or smuggle
-          # extra comma-separated tags into the publish list.
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          # Reject anything that isn't a clean stable vMAJOR.MINOR.PATCH tag,
+          # so a stray tag can't yield an invalid image tag or smuggle extra
+          # comma-separated tags into the publish list. Pre-releases are
+          # disallowed since `latest` is always applied and must only ever
+          # track a stable release.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Tag ${GITHUB_REF_NAME} is not a valid vMAJOR.MINOR.PATCH version. Refusing to publish."
             exit 1
           fi
