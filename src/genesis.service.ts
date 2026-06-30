@@ -73,20 +73,48 @@ export async function initGenesisWallet(): Promise<void> {
   await wallet.start();
   logger.info({ event: "genesis.wallet_started_waiting_sync" });
 
-  await new Promise<void>((resolve) => {
-    const check = () => {
-      if (wallet?.isReady()) {
-        resolve();
-      } else {
-        setTimeout(check, SYNC_CHECK_INTERVAL_MS);
-      }
-    };
-    check();
-  });
+  // Bounded wait: `wallet.start()` can resolve while the wallet never reaches
+  // `isReady()` (stalled sync, wrong network). Without a deadline the bootstrap
+  // would hang at `initializing` forever; on timeout we reject so the caller
+  // transitions to `degraded`.
+  await waitUntilReady(
+    () => wallet?.isReady() ?? false,
+    config.GENESIS_SYNC_TIMEOUT_MS,
+    SYNC_CHECK_INTERVAL_MS,
+  );
 
   genesisAddress = await wallet.getAddressAtIndex(0);
   ready = true;
   logger.info({ event: "genesis.ready", meta: { genesisAddress } });
+}
+
+/**
+ * Poll `isReady` every `intervalMs` until it returns true, or reject once
+ * `timeoutMs` elapses. Extracted from {@link initGenesisWallet} so the
+ * timeout/degrade path is unit-testable without a real fullnode.
+ */
+export async function waitUntilReady(
+  isReady: () => boolean,
+  timeoutMs: number,
+  intervalMs: number,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      if (isReady()) {
+        resolve();
+      } else if (Date.now() >= deadline) {
+        reject(
+          new Error(
+            `Genesis wallet did not become ready within ${timeoutMs}ms`,
+          ),
+        );
+      } else {
+        setTimeout(check, intervalMs);
+      }
+    };
+    check();
+  });
 }
 
 export function getGenesisWallet(): InstanceType<typeof HathorWallet> {

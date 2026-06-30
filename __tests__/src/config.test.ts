@@ -247,6 +247,20 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ FUNDING_ENABLED: "maybe" })).toThrow(ConfigError);
   });
 
+  test("GENESIS_SYNC_TIMEOUT_MS defaults to 120000", () => {
+    expect(loadConfig({}, noWarn).GENESIS_SYNC_TIMEOUT_MS).toBe(120_000);
+  });
+
+  test("GENESIS_SYNC_TIMEOUT_MS parses an override", () => {
+    expect(
+      loadConfig({ GENESIS_SYNC_TIMEOUT_MS: "5000" }, noWarn).GENESIS_SYNC_TIMEOUT_MS,
+    ).toBe(5000);
+  });
+
+  test("GENESIS_SYNC_TIMEOUT_MS rejects a sub-second value", () => {
+    expect(() => loadConfig({ GENESIS_SYNC_TIMEOUT_MS: "500" })).toThrow(ConfigError);
+  });
+
   test("treats whitespace-only wallet credentials as fallback", () => {
     const captured: ConfigWarning[] = [];
     const cfg = loadConfig(

@@ -35,6 +35,14 @@ export interface AppConfig {
    * stack, which always has a fullnode available.
    */
   readonly FUNDING_ENABLED: boolean;
+  /**
+   * Upper bound (ms) on how long the genesis wallet may take to finish
+   * syncing before the bootstrap gives up and transitions to `degraded`.
+   * Guards against a fullnode that accepts the connection but never lets
+   * the wallet reach `isReady()` (stalled sync, wrong network), which
+   * would otherwise hang startup at `initializing` forever.
+   */
+  readonly GENESIS_SYNC_TIMEOUT_MS: number;
   readonly HATHOR_NODE_URL: string;
   readonly TX_MINING_URL: string;
   readonly TX_MIN_WEIGHT?: number;
@@ -338,6 +346,14 @@ export function loadConfig(
 
   const FUNDING_ENABLED = parseBoolEnv(env, "FUNDING_ENABLED", true, issues);
 
+  const GENESIS_SYNC_TIMEOUT_MS = parseIntEnv(
+    env,
+    "GENESIS_SYNC_TIMEOUT_MS",
+    "120000",
+    issues,
+    { min: 1000, max: 600_000 },
+  );
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -382,6 +398,7 @@ export function loadConfig(
     ADDRESS_COUNT: 22,
     GENESIS_SEED_WORDS,
     FUNDING_ENABLED,
+    GENESIS_SYNC_TIMEOUT_MS,
     HATHOR_NODE_URL,
     TX_MINING_URL,
     TX_MIN_WEIGHT,
