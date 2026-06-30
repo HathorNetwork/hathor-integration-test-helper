@@ -137,6 +137,11 @@ export function computeReadiness(
   if (!genesisReady) {
     return { ready: false, readyReason: "genesis_wallet_not_ready" };
   }
+  // NOTE: `leftoverUtxos` is intentionally not consulted yet. Whether a
+  // leftover UTXO counts as "spendable → ready" depends on the real pool's
+  // reserveUtxo() source priority, which lands with the funding PR. The stub
+  // always reports 0 leftovers, so this is moot until then — revisit here
+  // when the pool becomes real.
   if (stats.testUtxos === 0 && stats.largeUtxoAmount === null) {
     return { ready: false, readyReason: "utxo_pool_empty" };
   }
