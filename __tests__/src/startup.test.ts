@@ -1,0 +1,89 @@
+import { describe, test, expect, beforeEach } from "bun:test";
+import {
+  bootstrapFunding,
+  getStartupState,
+  __resetStartupForTest,
+  type BootstrapDeps,
+} from "../../src/startup";
+
+/**
+ * The funding bootstrap is driven through injected collaborators (no
+ * fullnode, no module mocking — Bun's mock.module is process-global and
+ * leaks across files). Each scenario builds its own deps and resets the
+ * module-level boot promise back to `idle`.
+ */
+let initCalls = 0;
+
+function deps(overrides: Partial<BootstrapDeps> = {}): BootstrapDeps {
+  return {
+    fundingEnabled: true,
+    initGenesisWallet: async () => {
+      initCalls += 1;
+    },
+    isGenesisReady: () => true,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  initCalls = 0;
+  __resetStartupForTest();
+});
+
+describe("getStartupState contract", () => {
+  test("returns the expected shape with a known phase", () => {
+    const state = getStartupState();
+    expect(state).toHaveProperty("phase");
+    expect(state).toHaveProperty("lastError");
+    expect(state).toHaveProperty("lastUpdatedAt");
+    const validPhases = ["idle", "initializing", "ready", "disabled", "degraded"];
+    expect(validPhases).toContain(state.phase);
+  });
+
+  test("returns a copy, not the internal reference", () => {
+    const a = getStartupState();
+    const b = getStartupState();
+    expect(a).toEqual(b);
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("bootstrapFunding transitions", () => {
+  test("fundingEnabled=false short-circuits to 'disabled' without init", async () => {
+    await bootstrapFunding(deps({ fundingEnabled: false }));
+    expect(getStartupState().phase).toBe("disabled");
+    expect(initCalls).toBe(0);
+  });
+
+  test("a clean genesis init reaches 'ready'", async () => {
+    await bootstrapFunding(deps());
+    const state = getStartupState();
+    expect(state.phase).toBe("ready");
+    expect(state.lastError).toBeNull();
+    expect(initCalls).toBe(1);
+  });
+
+  test("a thrown init degrades gracefully with the error recorded", async () => {
+    await bootstrapFunding(
+      deps({
+        initGenesisWallet: async () => {
+          throw new Error("boom: bad seed");
+        },
+      }),
+    );
+    const state = getStartupState();
+    expect(state.phase).toBe("degraded");
+    expect(state.lastError).toContain("bad seed");
+  });
+
+  test("init resolving without readiness is treated as degraded", async () => {
+    await bootstrapFunding(deps({ isGenesisReady: () => false }));
+    expect(getStartupState().phase).toBe("degraded");
+  });
+
+  test("is idempotent — a second call does not re-initialize", async () => {
+    await bootstrapFunding(deps());
+    await bootstrapFunding(deps());
+    expect(initCalls).toBe(1);
+  });
+});

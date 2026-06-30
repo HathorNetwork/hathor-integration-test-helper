@@ -1,5 +1,10 @@
+import { JSONBigInt } from "@hathor/wallet-lib/lib/utils/bigint";
 import { getSimpleWalletFromCache } from "./wallet.cache";
 import { generateMultisigWallet } from "./wallet.service";
+import { isGenesisReady, getGenesisAddress } from "./genesis.service";
+import { getPoolStats, type PoolStats } from "./utxo-pool.service";
+import { getStartupState } from "./startup";
+import { config } from "./config";
 import { jsonErrorFromService } from "./http";
 import { InvalidRequestError } from "./errors";
 
@@ -95,7 +100,93 @@ export function handleMultisigWallet(req: Request): Response {
   return Response.json({ wallets, retrieveTimeMs: elapsed(start) });
 }
 
-/** GET /live — liveness probe. Always 200; readiness lives at /ready (PR3). */
+/** Machine-readable readiness reasons surfaced by /ready and /status. */
+export type ReadyReason =
+  | "funding_disabled"
+  | "genesis_wallet_not_ready"
+  | "utxo_pool_empty"
+  | "ready";
+
+export interface ReadinessVerdict {
+  readonly ready: boolean;
+  readonly readyReason: ReadyReason;
+}
+
+/**
+ * Pure readiness logic, derived from config + genesis + pool state. Order
+ * matters: the funding kill switch wins over everything (a disabled service
+ * is intentionally healthy), then genesis liveness, then pool availability.
+ *
+ *  - funding off                   → ready    (wallet-generation-only mode)
+ *  - genesis not yet synced        → not ready (genesis_wallet_not_ready)
+ *  - genesis ready, pool empty     → not ready (utxo_pool_empty)
+ *  - genesis ready, pool has funds → ready
+ *
+ * With the PR3 stub pool, `utxo_pool_empty` is the steady state once genesis
+ * is up; the `ready` branch activates when the real pool lands. Kept pure
+ * (no module reads) so it can be unit-tested by passing inputs directly.
+ */
+export function computeReadiness(
+  fundingEnabled: boolean,
+  genesisReady: boolean,
+  stats: PoolStats,
+): ReadinessVerdict {
+  if (!fundingEnabled) {
+    return { ready: true, readyReason: "funding_disabled" };
+  }
+  if (!genesisReady) {
+    return { ready: false, readyReason: "genesis_wallet_not_ready" };
+  }
+  if (stats.testUtxos === 0 && stats.largeUtxoAmount === null) {
+    return { ready: false, readyReason: "utxo_pool_empty" };
+  }
+  return { ready: true, readyReason: "ready" };
+}
+
+/** Gather live state and apply {@link computeReadiness}. */
+function currentReadiness(): ReadinessVerdict & { stats: PoolStats } {
+  const stats = getPoolStats();
+  const verdict = computeReadiness(config.FUNDING_ENABLED, isGenesisReady(), stats);
+  return { ...verdict, stats };
+}
+
+/**
+ * GET /status — operator-facing diagnostic. Always 200; the readiness
+ * verdict lives in the body alongside pool counts, the genesis address
+ * (when known), and the bootstrap phase. Serialized via JSONBigInt because
+ * `largeUtxoAmount` is a bigint once the real pool is populated.
+ */
+export function handleStatus(_req: Request): Response {
+  const readiness = currentReadiness();
+  return new Response(
+    JSONBigInt.stringify({
+      ready: readiness.ready,
+      readyReason: readiness.readyReason,
+      ...readiness.stats,
+      genesisAddress: isGenesisReady() ? getGenesisAddress() : null,
+      startup: getStartupState(),
+    }),
+    { headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/** GET /ready — readiness probe. 200 when ready, 503 otherwise. */
+export function handleReady(_req: Request): Response {
+  const readiness = currentReadiness();
+  return new Response(
+    JSONBigInt.stringify({
+      ready: readiness.ready,
+      readyReason: readiness.readyReason,
+      ...readiness.stats,
+    }),
+    {
+      status: readiness.ready ? 200 : 503,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
+}
+
+/** GET /live — liveness probe. Always 200; readiness lives at /ready. */
 export function handleLive(_req: Request): Response {
   return Response.json({ live: true });
 }

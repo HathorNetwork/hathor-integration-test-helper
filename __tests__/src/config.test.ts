@@ -207,6 +207,46 @@ describe("loadConfig", () => {
     expect(urls.every((w) => typeof w.defaultValue === "string")).toBe(true);
   });
 
+  // FUNDING_ENABLED gates whether the service initializes the genesis wallet
+  // and attempts on-chain funding. It defaults to `true` because the primary
+  // deployment is the hathor-wallet-lib integration stack (which has a
+  // fullnode). The no-fullnode "wallet provider drop-in" opts out explicitly.
+  test("FUNDING_ENABLED defaults to true on empty env", () => {
+    const cfg = loadConfig({}, noWarn);
+    expect(cfg.FUNDING_ENABLED).toBe(true);
+  });
+
+  test("FUNDING_ENABLED parses an explicit false", () => {
+    expect(loadConfig({ FUNDING_ENABLED: "false" }, noWarn).FUNDING_ENABLED).toBe(
+      false,
+    );
+    expect(loadConfig({ FUNDING_ENABLED: "0" }, noWarn).FUNDING_ENABLED).toBe(
+      false,
+    );
+  });
+
+  test("FUNDING_ENABLED parses an explicit true", () => {
+    expect(loadConfig({ FUNDING_ENABLED: "true" }, noWarn).FUNDING_ENABLED).toBe(
+      true,
+    );
+    expect(loadConfig({ FUNDING_ENABLED: "1" }, noWarn).FUNDING_ENABLED).toBe(
+      true,
+    );
+  });
+
+  test("FUNDING_ENABLED is case-insensitive and trims whitespace", () => {
+    expect(loadConfig({ FUNDING_ENABLED: "  FALSE  " }, noWarn).FUNDING_ENABLED).toBe(
+      false,
+    );
+    expect(loadConfig({ FUNDING_ENABLED: "True" }, noWarn).FUNDING_ENABLED).toBe(
+      true,
+    );
+  });
+
+  test("FUNDING_ENABLED rejects an unparseable value", () => {
+    expect(() => loadConfig({ FUNDING_ENABLED: "maybe" })).toThrow(ConfigError);
+  });
+
   test("treats whitespace-only wallet credentials as fallback", () => {
     const captured: ConfigWarning[] = [];
     const cfg = loadConfig(

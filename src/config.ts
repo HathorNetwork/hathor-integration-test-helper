@@ -25,6 +25,16 @@ export interface AppConfig {
    * later milestone); defaulted now for forward-aligned deployment.
    */
   readonly GENESIS_SEED_WORDS: string;
+  /**
+   * Gates the funding subsystem: when `true` (the default), startup
+   * initializes the genesis wallet and the service offers on-chain
+   * funding. When `false`, genesis is never touched — the service runs
+   * in wallet-generation-only mode (no fullnode required), which is how
+   * the PrecalculatedWallets drop-in is deployed. Defaulting to `true`
+   * targets the primary consumer: the hathor-wallet-lib integration
+   * stack, which always has a fullnode available.
+   */
+  readonly FUNDING_ENABLED: boolean;
   readonly HATHOR_NODE_URL: string;
   readonly TX_MINING_URL: string;
   readonly TX_MIN_WEIGHT?: number;
@@ -141,6 +151,30 @@ function parseOptionalIntEnv(
     return undefined;
   }
   return parseIntEnv(env, key, raw, issues, constraints);
+}
+
+/**
+ * Parse a boolean env var. Accepts `true/false/1/0` (case-insensitive,
+ * surrounding whitespace trimmed); an empty/unset value falls back to
+ * `fallback`. Anything else is a hard config error — silently coercing a
+ * typo'd `"flase"` to `true` would mask an operator's intent to disable
+ * funding.
+ */
+function parseBoolEnv(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: boolean,
+  issues: string[],
+): boolean {
+  const raw = env[key]?.trim();
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const normalized = raw.toLowerCase();
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  issues.push(`${key} must be one of true/false/1/0, got "${raw}"`);
+  return fallback;
 }
 
 function parseOptionalTrimmedString(
@@ -302,6 +336,8 @@ export function loadConfig(
   const GENESIS_SEED_WORDS =
     GENESIS_SEED_WORDS_RAW || GENESIS_SEED_WORDS_DEFAULT;
 
+  const FUNDING_ENABLED = parseBoolEnv(env, "FUNDING_ENABLED", true, issues);
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -345,6 +381,7 @@ export function loadConfig(
     NETWORK: "testnet",
     ADDRESS_COUNT: 22,
     GENESIS_SEED_WORDS,
+    FUNDING_ENABLED,
     HATHOR_NODE_URL,
     TX_MINING_URL,
     TX_MIN_WEIGHT,
