@@ -60,6 +60,42 @@ OpenAPI document lands with the project-docs PR.
 unreachable fullnode lands in `degraded` **without** taking the service
 down — the wallet endpoints keep serving.
 
+### Health checks
+
+`/ready` is the endpoint to wire into a container `HEALTHCHECK` or a
+docker-compose `depends_on: { condition: service_healthy }` gate — it is
+a readiness probe, returning `200` only when the service can serve its
+intended workload. Use `/live` for liveness (restart-if-dead), not for
+gating dependents; `/status` is always `200` and is for humans.
+
+For the wallet-provider drop-in (`FUNDING_ENABLED=false`), `/ready`
+returns `200 funding_disabled` as soon as the server is up — a correct
+and future-proof healthcheck (the same gate keeps working once funding
+lands). Example compose service (the image ships `bun`, so no `curl`
+needed):
+
+```yaml
+test-wallet-helper:
+  image: hathor-ith
+  environment:
+    FUNDING_ENABLED: "false"
+  healthcheck:
+    test:
+      - CMD
+      - bun
+      - -e
+      - "fetch('http://127.0.0.1:3020/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    interval: 5s
+    timeout: 3s
+    retries: 10
+```
+
+> ⚠️ Do **not** gate on `/ready` with `FUNDING_ENABLED=true` yet: the
+> UTXO pool is still a stub, so `/ready` stays `503 utxo_pool_empty` and
+> the container never reports healthy. Once the funding/pool PRs land,
+> `/ready` will reach `200` and become the correct gate for the
+> funding-enabled stack too.
+
 ## Funding modes
 
 `FUNDING_ENABLED` (default `true`) selects how the service runs:
