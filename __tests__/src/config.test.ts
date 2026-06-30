@@ -261,6 +261,33 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ GENESIS_SYNC_TIMEOUT_MS: "500" })).toThrow(ConfigError);
   });
 
+  // Wallet-generation-only mode (FUNDING_ENABLED=false) must not fail on
+  // funding-only config — the fullnode endpoints are never used there.
+  test("funding disabled skips fullnode URL validation", () => {
+    expect(() =>
+      loadConfig(
+        {
+          FUNDING_ENABLED: "false",
+          HATHOR_NODE_URL: "not a url",
+          TX_MINING_URL: "also bad",
+        },
+        noWarn,
+      ),
+    ).not.toThrow();
+  });
+
+  test("funding disabled emits no fullnode-URL default warnings", () => {
+    const captured: ConfigWarning[] = [];
+    loadConfig({ FUNDING_ENABLED: "false" }, { onWarning: (w) => captured.push(w) });
+    expect(captured.some((w) => w.event === "config.using_default_url")).toBe(false);
+  });
+
+  test("funding enabled still validates fullnode URLs", () => {
+    expect(() =>
+      loadConfig({ FUNDING_ENABLED: "true", HATHOR_NODE_URL: "not a url" }),
+    ).toThrow(ConfigError);
+  });
+
   test("treats whitespace-only wallet credentials as fallback", () => {
     const captured: ConfigWarning[] = [];
     const cfg = loadConfig(

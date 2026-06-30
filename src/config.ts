@@ -323,10 +323,20 @@ export function loadConfig(
     );
   }
 
-  const HATHOR_NODE_URL_RAW = parseOptionalUrl(env, "HATHOR_NODE_URL", issues);
-  const TX_MINING_URL_RAW = parseOptionalUrl(env, "TX_MINING_URL", issues);
+  const FUNDING_ENABLED = parseBoolEnv(env, "FUNDING_ENABLED", true, issues);
+
   const HATHOR_NODE_URL_DEFAULT = "http://localhost:8083/v1a/";
   const TX_MINING_URL_DEFAULT = "http://localhost:8035/";
+  // The fullnode + tx-mining endpoints are funding-only. With funding
+  // disabled they are never used, so we neither validate them (a malformed
+  // leftover value must not block wallet-generation-only mode) nor warn about
+  // defaults — `*_RAW` stays undefined and the warning block below is skipped.
+  let HATHOR_NODE_URL_RAW: string | undefined;
+  let TX_MINING_URL_RAW: string | undefined;
+  if (FUNDING_ENABLED) {
+    HATHOR_NODE_URL_RAW = parseOptionalUrl(env, "HATHOR_NODE_URL", issues);
+    TX_MINING_URL_RAW = parseOptionalUrl(env, "TX_MINING_URL", issues);
+  }
   const HATHOR_NODE_URL = HATHOR_NODE_URL_RAW || HATHOR_NODE_URL_DEFAULT;
   const TX_MINING_URL = TX_MINING_URL_RAW || TX_MINING_URL_DEFAULT;
 
@@ -344,8 +354,6 @@ export function loadConfig(
   const GENESIS_SEED_WORDS =
     GENESIS_SEED_WORDS_RAW || GENESIS_SEED_WORDS_DEFAULT;
 
-  const FUNDING_ENABLED = parseBoolEnv(env, "FUNDING_ENABLED", true, issues);
-
   const GENESIS_SYNC_TIMEOUT_MS = parseIntEnv(
     env,
     "GENESIS_SYNC_TIMEOUT_MS",
@@ -358,19 +366,21 @@ export function loadConfig(
     throw new ConfigError(issues);
   }
 
-  if (!HATHOR_NODE_URL_RAW) {
-    onWarning({
-      event: "config.using_default_url",
-      key: "HATHOR_NODE_URL",
-      defaultValue: HATHOR_NODE_URL_DEFAULT,
-    });
-  }
-  if (!TX_MINING_URL_RAW) {
-    onWarning({
-      event: "config.using_default_url",
-      key: "TX_MINING_URL",
-      defaultValue: TX_MINING_URL_DEFAULT,
-    });
+  if (FUNDING_ENABLED) {
+    if (!HATHOR_NODE_URL_RAW) {
+      onWarning({
+        event: "config.using_default_url",
+        key: "HATHOR_NODE_URL",
+        defaultValue: HATHOR_NODE_URL_DEFAULT,
+      });
+    }
+    if (!TX_MINING_URL_RAW) {
+      onWarning({
+        event: "config.using_default_url",
+        key: "TX_MINING_URL",
+        defaultValue: TX_MINING_URL_DEFAULT,
+      });
+    }
   }
   if (!WALLET_PASSWORD_RAW) {
     onWarning({
