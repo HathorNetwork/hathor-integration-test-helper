@@ -13,6 +13,7 @@ import {
  * module-level boot promise back to `idle`.
  */
 let initCalls = 0;
+let splitCalls = 0;
 
 function deps(overrides: Partial<BootstrapDeps> = {}): BootstrapDeps {
   return {
@@ -21,12 +22,19 @@ function deps(overrides: Partial<BootstrapDeps> = {}): BootstrapDeps {
       initCalls += 1;
     },
     isGenesisReady: () => true,
+    // Default: pool already has test-sized UTXOs, so no initial split fires.
+    populatePoolFromWallet: async () => {},
+    getPoolStats: () => ({ testUtxos: 5, leftoverUtxos: 0, largeUtxoAmount: null }),
+    runInitialSplit: async () => {
+      splitCalls += 1;
+    },
     ...overrides,
   };
 }
 
 beforeEach(() => {
   initCalls = 0;
+  splitCalls = 0;
   __resetStartupForTest();
 });
 
@@ -85,5 +93,51 @@ describe("bootstrapFunding transitions", () => {
     await bootstrapFunding(deps());
     await bootstrapFunding(deps());
     expect(initCalls).toBe(1);
+  });
+});
+
+describe("bootstrapFunding pool population", () => {
+  test("skips the initial split when the pool already has test UTXOs", async () => {
+    await bootstrapFunding(
+      deps({
+        getPoolStats: () => ({ testUtxos: 3, leftoverUtxos: 0, largeUtxoAmount: 50000n }),
+      }),
+    );
+    expect(getStartupState().phase).toBe("ready");
+    expect(splitCalls).toBe(0);
+  });
+
+  test("runs the initial split when only a large UTXO exists", async () => {
+    await bootstrapFunding(
+      deps({
+        getPoolStats: () => ({ testUtxos: 0, leftoverUtxos: 0, largeUtxoAmount: 50000n }),
+      }),
+    );
+    expect(getStartupState().phase).toBe("ready");
+    expect(splitCalls).toBe(1);
+  });
+
+  test("does not split when the pool is entirely empty", async () => {
+    await bootstrapFunding(
+      deps({
+        getPoolStats: () => ({ testUtxos: 0, leftoverUtxos: 0, largeUtxoAmount: null }),
+      }),
+    );
+    expect(getStartupState().phase).toBe("ready");
+    expect(splitCalls).toBe(0);
+  });
+
+  test("a failed initial split degrades with the error recorded", async () => {
+    await bootstrapFunding(
+      deps({
+        getPoolStats: () => ({ testUtxos: 0, leftoverUtxos: 0, largeUtxoAmount: 50000n }),
+        runInitialSplit: async () => {
+          throw new Error("split failed after 3 attempts");
+        },
+      }),
+    );
+    const state = getStartupState();
+    expect(state.phase).toBe("degraded");
+    expect(state.lastError).toContain("split failed");
   });
 });
