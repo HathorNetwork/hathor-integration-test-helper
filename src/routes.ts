@@ -3,10 +3,14 @@ import { getSimpleWalletFromCache } from "./wallet.cache";
 import { generateMultisigWallet } from "./wallet.service";
 import { isGenesisReady, getGenesisAddress } from "./genesis.service";
 import { getPoolStats, type PoolStats } from "./utxo-pool.service";
+import { parseFundBody } from "./parse-fund-body";
+import { fundAddress, getFundingLifecycleState } from "./fund.service";
 import { getStartupState } from "./startup";
 import { config } from "./config";
-import { jsonErrorFromService } from "./http";
-import { InvalidRequestError } from "./errors";
+import { jsonError, jsonErrorFromService } from "./http";
+import { logger } from "./logger";
+import { getMetricsSnapshot, recordFundSuccess } from "./metrics";
+import { InvalidRequestError, ServiceError, ServiceNotReadyError } from "./errors";
 
 /**
  * Route handlers for PR2. Each handler returns a `Response` — including
@@ -166,6 +170,7 @@ export function handleStatus(_req: Request): Response {
       ...readiness.stats,
       genesisAddress: isGenesisReady() ? getGenesisAddress() : null,
       startup: getStartupState(),
+      funding: getFundingLifecycleState(),
     }),
     { headers: { "Content-Type": "application/json" } },
   );
@@ -190,4 +195,62 @@ export function handleReady(_req: Request): Response {
 /** GET /live — liveness probe. Always 200; readiness lives at /ready. */
 export function handleLive(_req: Request): Response {
   return Response.json({ live: true });
+}
+
+/** Per-service sequence number for fund logs (observability only). */
+let fundSeq = 0;
+
+/**
+ * POST /fund — reserve a UTXO and send funds to the requested address.
+ *
+ * 503 SERVICE_NOT_READY until genesis has synced; 400/413 INVALID_REQUEST for
+ * a malformed body; on success 200 with `{txId, amount, utxoSource}`. Domain
+ * failures (`POOL_EXHAUSTED`, `SPLIT_IN_PROGRESS`, `UTXO_STALE`,
+ * `FUND_TIMEOUT`) arrive as {@link ServiceError}s and are mapped to their RFC
+ * response via {@link jsonErrorFromService}; anything else is a 500.
+ */
+export async function handleFund(req: Request): Promise<Response> {
+  if (!isGenesisReady()) {
+    return jsonErrorFromService(new ServiceNotReadyError());
+  }
+
+  const parsed = await parseFundBody(req);
+  if (parsed instanceof Response) {
+    return parsed;
+  }
+
+  const { address, amount } = parsed;
+
+  try {
+    const result = await fundAddress(address, amount);
+    fundSeq += 1;
+    recordFundSuccess();
+    const stats = getPoolStats();
+    logger.info({
+      event: "fund.sent",
+      meta: {
+        seq: fundSeq,
+        txId: result.txId,
+        testUtxos: stats.testUtxos,
+        utxoSource: result.utxoSource,
+        amount: result.amount.toString(),
+      },
+    });
+    return new Response(JSONBigInt.stringify(result), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      // The RFC's documented error codes are surfaced via their descriptors.
+      return jsonErrorFromService(err);
+    }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ event: "fund.failed", meta: { error: message } });
+    return jsonError(500, "INTERNAL_ERROR", message, false);
+  }
+}
+
+/** GET /metrics — JSON snapshot of request counts, latencies, and pool ops. */
+export function handleMetrics(_req: Request): Response {
+  return Response.json(getMetricsSnapshot());
 }
