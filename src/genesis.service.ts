@@ -130,3 +130,89 @@ export function getGenesisAddress(): string {
 export function isGenesisReady(): boolean {
   return ready;
 }
+
+/**
+ * Storage surface used by the reward-lock wait. Declared structurally (a
+ * subset of wallet-lib's storage) so the poll loop is unit-testable with a
+ * plain fake — no real fullnode, mirroring the {@link waitUntilReady} seam.
+ */
+export interface RewardLockStorage {
+  version?: { reward_spend_min_blocks?: number };
+  getTx(txId: string): Promise<{ height?: number | null } | null>;
+  getCurrentHeight(): Promise<number>;
+}
+
+/**
+ * Wait until a block-reward UTXO's height lock has expired.
+ *
+ * Block reward UTXOs in Hathor are height-locked: unspendable until
+ * `reward_spend_min_blocks` blocks have been mined after the block that
+ * contains them (`locked = currentHeight < blockHeight + reward_spend_min_blocks`).
+ * On a fresh private testnet the genesis UTXO is almost always still locked
+ * at startup; attempting the split early pollutes the fullnode's mempool with
+ * a tx that fails "inputs already spent"/"full validation failed". We instead
+ * poll `getCurrentHeight()` until the lock expires.
+ *
+ * Pure seam over a storage object so it can be unit-tested; the production
+ * entry point {@link waitForUtxoUnlock} passes the real wallet's storage.
+ */
+export async function waitForRewardUnlock(
+  storage: RewardLockStorage,
+  txId: string,
+  options: { pollIntervalMs?: number; timeoutMs?: number } = {},
+): Promise<void> {
+  const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+  const timeoutMs = options.timeoutMs ?? 600_000; // 10 minutes safety net
+
+  const rewardLock = storage.version?.reward_spend_min_blocks ?? 0;
+  if (rewardLock === 0) {
+    // No reward lock configured — nothing to wait for.
+    return;
+  }
+
+  const tx = await storage.getTx(txId);
+  const blockHeight = tx?.height;
+  if (blockHeight == null) {
+    // Not a block or height unknown — can't compute lock, skip.
+    logger.warn({ event: "genesis.reward_lock_unknown_block_height", meta: { txId } });
+    return;
+  }
+
+  const unlockHeight = blockHeight + rewardLock + 1;
+  let currentHeight = await storage.getCurrentHeight();
+  if (currentHeight >= unlockHeight) {
+    return; // Already unlocked.
+  }
+
+  const blocksNeeded = unlockHeight - currentHeight;
+  logger.info({
+    event: "genesis.reward_lock_waiting",
+    meta: { txId, blockHeight, rewardLock, unlockHeight, currentHeight, blocksNeeded },
+  });
+
+  const start = Date.now();
+  while (currentHeight < unlockHeight) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(
+        `Timeout waiting for reward unlock (need height ${unlockHeight}, at ${currentHeight})`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    currentHeight = await storage.getCurrentHeight();
+  }
+
+  logger.info({
+    event: "genesis.reward_lock_unlocked",
+    meta: { txId, currentHeight, unlockHeight },
+  });
+}
+
+/**
+ * Production entry point: wait for the genesis wallet's UTXO reward lock to
+ * expire before spending it. Thin wrapper over {@link waitForRewardUnlock}
+ * with the real wallet's storage.
+ */
+export async function waitForUtxoUnlock(txId: string): Promise<void> {
+  const w = getGenesisWallet();
+  await waitForRewardUnlock(w.storage as unknown as RewardLockStorage, txId);
+}
