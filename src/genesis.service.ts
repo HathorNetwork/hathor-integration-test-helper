@@ -132,6 +132,19 @@ export function isGenesisReady(): boolean {
 }
 
 /**
+ * Test-only: force the genesis readiness flag and address without a fullnode,
+ * so route/handler tests can exercise the ready path via dependency injection
+ * (not `mock.module`, which leaks process-globally across Bun test files).
+ */
+export function __setGenesisStateForTest(state: {
+  ready?: boolean;
+  address?: string | null;
+}): void {
+  if (state.ready !== undefined) ready = state.ready;
+  if (state.address !== undefined) genesisAddress = state.address;
+}
+
+/**
  * Storage surface used by the reward-lock wait. Declared structurally (a
  * subset of wallet-lib's storage) so the poll loop is unit-testable with a
  * plain fake — no real fullnode, mirroring the {@link waitUntilReady} seam.

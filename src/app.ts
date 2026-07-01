@@ -4,6 +4,8 @@ import {
   handleStatus,
   handleReady,
   handleLive,
+  handleFund,
+  handleMetrics,
 } from "./routes";
 import { ensureRequestId, jsonError, withRequestIdHeader } from "./http";
 import { logger } from "./logger";
@@ -68,9 +70,9 @@ async function runHandler(
 }
 
 /**
- * Build the Bun.serve route table. The `/fund` and `/metrics` endpoints
- * are added by the funding PRs; the genesis/readiness layer registers
- * `/status` and `/ready` here alongside the wallet endpoints.
+ * Build the Bun.serve route table: the wallet-generation endpoints, the
+ * genesis/readiness probes (`/status`, `/ready`, `/live`), and the funding
+ * endpoints (`POST /fund`, `GET /metrics`).
  */
 export function createRoutes() {
   return {
@@ -88,6 +90,12 @@ export function createRoutes() {
     },
     "/live": {
       GET: withObservability("/live", handleLive),
+    },
+    "/fund": {
+      POST: withObservability("/fund", handleFund),
+    },
+    "/metrics": {
+      GET: withObservability("/metrics", handleMetrics),
     },
   };
 }
