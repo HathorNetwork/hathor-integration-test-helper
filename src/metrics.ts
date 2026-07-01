@@ -15,6 +15,14 @@ interface RouteMetric {
 
 let routeMetrics = new Map<string, RouteMetric>();
 
+// Funding-subsystem counters. Kept as module-level primitives (not a map)
+// because the set is fixed and small; the /metrics snapshot exposes them
+// alongside the per-route table.
+let fundCount = 0;
+let staleUtxoRescans = 0;
+let splitCount = 0;
+let splitFailures = 0;
+
 function getRouteMetric(route: string): RouteMetric {
   const existing = routeMetrics.get(route);
   if (existing) return existing;
@@ -41,11 +49,34 @@ export interface RouteSnapshot {
   avgLatencyMs: number;
 }
 
-export interface MetricsSnapshot {
-  routes: Record<string, RouteSnapshot>;
+/** Increment the successful fund transaction counter. */
+export function recordFundSuccess(): void {
+  fundCount += 1;
 }
 
-/** Point-in-time view of the per-route counters. */
+/** Record a UTXO split attempt, incrementing successes or failures. */
+export function recordSplit(success: boolean): void {
+  if (success) {
+    splitCount += 1;
+    return;
+  }
+  splitFailures += 1;
+}
+
+/** Increment the stale-UTXO rescan counter. */
+export function recordRescan(): void {
+  staleUtxoRescans += 1;
+}
+
+export interface MetricsSnapshot {
+  routes: Record<string, RouteSnapshot>;
+  fundCount: number;
+  staleUtxoRescans: number;
+  splitCount: number;
+  splitFailures: number;
+}
+
+/** Point-in-time view of the per-route counters and funding operations. */
 export function getMetricsSnapshot(): MetricsSnapshot {
   const routes: MetricsSnapshot["routes"] = {};
   for (const [route, m] of routeMetrics.entries()) {
@@ -58,10 +89,14 @@ export function getMetricsSnapshot(): MetricsSnapshot {
           : Number((m.totalLatencyMs / m.requests).toFixed(2)),
     };
   }
-  return { routes };
+  return { routes, fundCount, staleUtxoRescans, splitCount, splitFailures };
 }
 
-/** Test-only: clear all per-route counters. */
+/** Test-only: clear all per-route counters and funding counters. */
 export function __resetMetricsForTest(): void {
   routeMetrics = new Map();
+  fundCount = 0;
+  staleUtxoRescans = 0;
+  splitCount = 0;
+  splitFailures = 0;
 }
