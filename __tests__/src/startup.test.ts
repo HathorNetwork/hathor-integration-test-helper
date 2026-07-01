@@ -13,6 +13,7 @@ import {
  * module-level boot promise back to `idle`.
  */
 let initCalls = 0;
+let splitCalls = 0;
 
 function deps(overrides: Partial<BootstrapDeps> = {}): BootstrapDeps {
   return {
@@ -21,12 +22,19 @@ function deps(overrides: Partial<BootstrapDeps> = {}): BootstrapDeps {
       initCalls += 1;
     },
     isGenesisReady: () => true,
+    // Default: pool already has test-sized UTXOs, so no initial split fires.
+    populatePoolFromWallet: async () => {},
+    getPoolStats: () => ({ testUtxos: 5 }),
+    runInitialSplit: async () => {
+      splitCalls += 1;
+    },
     ...overrides,
   };
 }
 
 beforeEach(() => {
   initCalls = 0;
+  splitCalls = 0;
   __resetStartupForTest();
 });
 
@@ -85,5 +93,44 @@ describe("bootstrapFunding transitions", () => {
     await bootstrapFunding(deps());
     await bootstrapFunding(deps());
     expect(initCalls).toBe(1);
+  });
+});
+
+describe("bootstrapFunding pool population", () => {
+  test("skips the initial split when the pool already has test UTXOs", async () => {
+    await bootstrapFunding(
+      deps({
+        getPoolStats: () => ({ testUtxos: 3 }),
+      }),
+    );
+    expect(getStartupState().phase).toBe("ready");
+    expect(splitCalls).toBe(0);
+  });
+
+  test("delegates the initial split when the pool has no test UTXOs", async () => {
+    // With PR13's wallet-sourced pool, stats expose only `testUtxos`; whether a
+    // large output exists to split is discovered inside runInitialSplit (via a
+    // live wallet query), so the bootstrap delegates whenever testUtxos === 0.
+    await bootstrapFunding(
+      deps({
+        getPoolStats: () => ({ testUtxos: 0 }),
+      }),
+    );
+    expect(getStartupState().phase).toBe("ready");
+    expect(splitCalls).toBe(1);
+  });
+
+  test("a failed initial split degrades with the error recorded", async () => {
+    await bootstrapFunding(
+      deps({
+        getPoolStats: () => ({ testUtxos: 0 }),
+        runInitialSplit: async () => {
+          throw new Error("split failed after 3 attempts");
+        },
+      }),
+    );
+    const state = getStartupState();
+    expect(state.phase).toBe("degraded");
+    expect(state.lastError).toContain("split failed");
   });
 });
