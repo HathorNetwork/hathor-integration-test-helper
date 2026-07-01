@@ -1,18 +1,31 @@
-import { initGenesisWallet, isGenesisReady } from "./genesis.service";
+import { NATIVE_TOKEN_UID } from "@hathor/wallet-lib/lib/constants";
+import {
+  initGenesisWallet,
+  isGenesisReady,
+  getGenesisWallet,
+  waitForUtxoUnlock,
+} from "./genesis.service";
+import {
+  populateFromUtxos,
+  getPoolStats,
+  type PoolStats,
+} from "./utxo-pool.service";
+import { splitUtxo, reserveLargeFromWallet } from "./fund.service";
 import { config } from "./config";
 import { logger } from "./logger";
 
 /**
  * Funding subsystem bootstrap.
  *
- * Brings the genesis wallet online (when funding is enabled) and exposes a
- * coarse lifecycle phase via GET /status. UTXO-pool population and the
- * initial split are handled elsewhere; this module intentionally does not
- * touch the pool yet.
+ * Brings the genesis wallet online (when funding is enabled), populates the
+ * UTXO pool from its available outputs, and performs the initial split so the
+ * pool has test-sized UTXOs to fund from. A coarse lifecycle phase is exposed
+ * via GET /status.
  *
- * The bootstrap never throws into the server: a bad seed or unreachable
- * fullnode transitions to `degraded` (recorded with `lastError`) while the
- * HTTP server stays up serving the wallet-generation endpoints.
+ * The bootstrap never throws into the server: a bad seed, unreachable
+ * fullnode, or failed split transitions to `degraded` (recorded with
+ * `lastError`) while the HTTP server stays up serving wallet-generation
+ * endpoints.
  */
 
 /** Lifecycle phases of the funding subsystem bootstrap. */
@@ -42,14 +55,83 @@ export interface BootstrapDeps {
   readonly fundingEnabled: boolean;
   readonly initGenesisWallet: () => Promise<void>;
   readonly isGenesisReady: () => boolean;
+  readonly populatePoolFromWallet: () => Promise<void>;
+  readonly getPoolStats: () => PoolStats;
+  readonly runInitialSplit: () => Promise<void>;
 }
 
-/** Production wiring: read the live config and the real genesis service. */
+/**
+ * Re-query wallet-lib for available UTXOs and repopulate the pool from
+ * scratch. Production implementation of {@link BootstrapDeps.populatePoolFromWallet}.
+ */
+async function refreshPoolFromWallet(): Promise<void> {
+  const wallet = getGenesisWallet();
+  const utxos: Array<{ txId: string; index: number; value: bigint }> = [];
+  for await (const utxo of wallet.getAvailableUtxos({ token: NATIVE_TOKEN_UID })) {
+    utxos.push({
+      txId: utxo.txId,
+      index: utxo.index,
+      value: BigInt(utxo.value),
+    });
+  }
+  populateFromUtxos(utxos);
+}
+
+/**
+ * Attempt the first UTXO split up to `maxAttempts` times with linear backoff,
+ * refreshing the pool between attempts. Production implementation of
+ * {@link BootstrapDeps.runInitialSplit}.
+ *
+ * Large funding is wallet-sourced (PR13): the pool holds no large slot, so the
+ * output to split is found by querying the wallet live and reserved through
+ * {@link reserveLargeFromWallet} — not read from pool stats.
+ */
+async function runInitialSplitWithRetry(maxAttempts: number): Promise<void> {
+  let lastError: string | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const reserved = await reserveLargeFromWallet(config.UTXO_SPLIT_AMOUNT);
+    if (reserved === null) {
+      // Nothing large to split. An entirely-empty pool is a valid ready
+      // state — readiness reports it as pool-empty and a later fund/rescan
+      // can populate it — so this is a clean skip, not a startup failure.
+      logger.info({ event: "startup.initial_split_skipped_no_large" });
+      return;
+    }
+
+    try {
+      await waitForUtxoUnlock(reserved.utxo.txId);
+      await splitUtxo(reserved.utxo);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : "Unknown split error";
+      logger.warn({
+        event: "startup.initial_split_failed",
+        meta: { attempt, maxAttempts, error: lastError },
+      });
+      await refreshPoolFromWallet();
+
+      if (attempt < maxAttempts) {
+        const backoffMs = 1000 * attempt;
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
+    }
+  }
+
+  throw new Error(
+    `Initial split failed after ${maxAttempts} attempts: ${lastError ?? "unknown"}`,
+  );
+}
+
+/** Production wiring: read the live config and the real genesis + pool services. */
 function defaultDeps(): BootstrapDeps {
   return {
     fundingEnabled: config.FUNDING_ENABLED,
     initGenesisWallet,
     isGenesisReady,
+    populatePoolFromWallet: refreshPoolFromWallet,
+    getPoolStats,
+    runInitialSplit: () => runInitialSplitWithRetry(3),
   };
 }
 
@@ -66,9 +148,9 @@ export function getStartupState(): StartupState {
 }
 
 /**
- * Bootstrap the genesis wallet in the background. Safe to call multiple
- * times — initialization runs once and subsequent calls await the same
- * promise.
+ * Bootstrap the genesis wallet and UTXO pool in the background. Safe to call
+ * multiple times — initialization runs once and subsequent calls await the
+ * same promise.
  */
 export async function bootstrapFunding(
   deps: BootstrapDeps = defaultDeps(),
@@ -95,6 +177,16 @@ export async function bootstrapFunding(
       setStartupState("degraded", "Genesis wallet did not become ready");
       logger.error({ event: "startup.genesis_not_ready" });
       return;
+    }
+
+    // Genesis is up: populate the pool from its UTXOs, and if there are no
+    // test-sized UTXOs yet, perform the initial split (which sources its large
+    // input from the wallet live).
+    await deps.populatePoolFromWallet();
+    const stats = deps.getPoolStats();
+    if (stats.testUtxos === 0) {
+      logger.info({ event: "startup.initial_split_required" });
+      await deps.runInitialSplit();
     }
 
     setStartupState("ready", null);
