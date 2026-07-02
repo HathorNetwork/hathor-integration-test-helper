@@ -122,9 +122,10 @@ export interface ReadinessVerdict {
  *  - genesis ready, pool empty     → not ready (utxo_pool_empty)
  *  - genesis ready, pool has funds → ready
  *
- * With the PR3 stub pool, `utxo_pool_empty` is the steady state once genesis
- * is up; the `ready` branch activates when the real pool lands. Kept pure
- * (no module reads) so it can be unit-tested by passing inputs directly.
+ * While the UTXO pool reports empty, `utxo_pool_empty` is the steady state
+ * once genesis is up; the `ready` branch activates when the pool holds
+ * spendable funds. Kept pure (no module reads) so it can be unit-tested by
+ * passing inputs directly.
  */
 export function computeReadiness(
   fundingEnabled: boolean,
@@ -137,11 +138,10 @@ export function computeReadiness(
   if (!genesisReady) {
     return { ready: false, readyReason: "genesis_wallet_not_ready" };
   }
-  // NOTE: `leftoverUtxos` is intentionally not consulted yet. Whether a
-  // leftover UTXO counts as "spendable → ready" depends on the real pool's
-  // reserveUtxo() source priority, which lands with the funding PR. The stub
-  // always reports 0 leftovers, so this is moot until then — revisit here
-  // when the pool becomes real.
+  // TODO(funding): consult `leftoverUtxos` here once the UTXO pool is real.
+  // Whether a leftover UTXO counts as "spendable → ready" depends on the
+  // pool's reserveUtxo() source priority. The pool currently reports 0
+  // leftovers, so this branch is moot until then.
   if (stats.testUtxos === 0 && stats.largeUtxoAmount === null) {
     return { ready: false, readyReason: "utxo_pool_empty" };
   }

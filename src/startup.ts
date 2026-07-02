@@ -5,10 +5,10 @@ import { logger } from "./logger";
 /**
  * Funding subsystem bootstrap.
  *
- * PR3 scope: bring the genesis wallet online (when funding is enabled) and
- * expose a coarse lifecycle phase via GET /status. UTXO-pool population and
- * the initial split land in the funding PRs; this module intentionally does
- * not touch the pool yet.
+ * Brings the genesis wallet online (when funding is enabled) and exposes a
+ * coarse lifecycle phase via GET /status. UTXO-pool population and the
+ * initial split are handled elsewhere; this module intentionally does not
+ * touch the pool yet.
  *
  * The bootstrap never throws into the server: a bad seed or unreachable
  * fullnode transitions to `degraded` (recorded with `lastError`) while the

@@ -11,9 +11,9 @@ import { logger } from "./logger";
  * service spends from; it is initialized at startup (only when funding is
  * enabled) and connects to the configured fullnode.
  *
- * UTXO-pool population and the on-chain split are deliberately NOT here —
- * they belong to the funding PRs. This module owns just the wallet's
- * connect-and-sync lifecycle plus the accessors the routes read.
+ * UTXO-pool population and the on-chain split are deliberately NOT here.
+ * This module owns just the wallet's connect-and-sync lifecycle plus the
+ * accessors the routes read.
  */
 
 let wallet: InstanceType<typeof HathorWallet> | null = null;
@@ -45,14 +45,12 @@ export async function initGenesisWallet(): Promise<void> {
   // three plus calculateWeight to pin the minimum, matching wallet-lib's own
   // integration-test setup.
   if (config.TX_MIN_WEIGHT) {
-    // Capture in a local const so the closure below sees a `number` rather
-    // than `number | undefined` — the optional config field cannot be
-    // narrowed through a function expression that re-reads it.
+    // Local const narrows the optional config field to `number` for the closure.
     const txMinWeight = config.TX_MIN_WEIGHT;
     TX_WEIGHT_CONSTANTS.txMinWeight = txMinWeight;
     TX_WEIGHT_CONSTANTS.txWeightCoefficient = 0;
     TX_WEIGHT_CONSTANTS.txMinWeightK = 0;
-    Transaction.prototype.calculateWeight = function () {
+    Transaction.prototype.calculateWeight = function (): number {
       return txMinWeight;
     };
     logger.info({ event: "genesis.tx_weight_overridden", meta: { txMinWeight } });
@@ -98,23 +96,15 @@ export async function waitUntilReady(
   timeoutMs: number,
   intervalMs: number,
 ): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs;
-    const check = () => {
-      if (isReady()) {
-        resolve();
-      } else if (Date.now() >= deadline) {
-        reject(
-          new Error(
-            `Genesis wallet did not become ready within ${timeoutMs}ms`,
-          ),
-        );
-      } else {
-        setTimeout(check, intervalMs);
-      }
-    };
-    check();
-  });
+  const deadline = Date.now() + timeoutMs;
+  while (!isReady()) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Genesis wallet did not become ready within ${timeoutMs}ms`,
+      );
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
 }
 
 export function getGenesisWallet(): InstanceType<typeof HathorWallet> {

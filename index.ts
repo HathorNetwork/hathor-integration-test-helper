@@ -1,10 +1,9 @@
 /**
- * Bootstrap entry point. Wired incrementally by subsequent PRs:
- * - PR2 wires `initializeCache()` and the `/simpleWallet`, `/multisigWallet`,
- *   and `/live` routes.
- * - The genesis/readiness layer wires `bootstrapFunding()` plus the
- *   `/status` and `/ready` routes.
- * - The funding PRs wire the `/fund` and `/metrics` routes.
+ * Bootstrap entry point. Wires the service startup sequence:
+ * - `initializeCache()` and the `/simpleWallet`, `/multisigWallet`, and
+ *   `/live` routes.
+ * - `bootstrapFunding()` plus the `/status` and `/ready` routes.
+ * - The `/fund` and `/metrics` routes are not wired yet.
  */
 import { config } from "./src/config";
 import { logger } from "./src/logger";

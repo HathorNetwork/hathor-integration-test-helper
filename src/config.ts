@@ -354,10 +354,11 @@ export function loadConfig(
   const GENESIS_SEED_WORDS =
     GENESIS_SEED_WORDS_RAW || GENESIS_SEED_WORDS_DEFAULT;
 
+  const GENESIS_SYNC_TIMEOUT_MS_DEFAULT = "120000";
   const GENESIS_SYNC_TIMEOUT_MS = parseIntEnv(
     env,
     "GENESIS_SYNC_TIMEOUT_MS",
-    "120000",
+    GENESIS_SYNC_TIMEOUT_MS_DEFAULT,
     issues,
     { min: 1000, max: 600_000 },
   );

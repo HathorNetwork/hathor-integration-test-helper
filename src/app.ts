@@ -68,9 +68,8 @@ async function runHandler(
 }
 
 /**
- * Build the Bun.serve route table. The `/fund` and `/metrics` endpoints
- * are added by the funding PRs; the genesis/readiness layer registers
- * `/status` and `/ready` here alongside the wallet endpoints.
+ * Build the Bun.serve route table. Registers `/status` and `/ready`
+ * alongside the wallet endpoints; `/fund` and `/metrics` are not wired yet.
  */
 export function createRoutes() {
   return {
