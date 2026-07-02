@@ -10,3 +10,18 @@ updates:
       - "dependencies"
     commit-message:
       prefix: "chore"
+    # Wait at least a week after a release is published before proposing
+    # it. A freshly published (possibly compromised) version then has time
+    # to be flagged and pulled before it can ever reach a PR here — the
+    # tj-actions/changed-files class of supply chain attack.
+    cooldown:
+      default-days: 7
+    # Only surface meaningful updates. Patch releases are almost always
+    # churn for SHA-pinned actions ("fixes a bug we never hit"). Genuine
+    # vulnerabilities are unaffected: they arrive via Dependabot security
+    # updates, which these ignore rules do not touch (per GitHub docs,
+    # update-types only filters version updates, not security updates).
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"
