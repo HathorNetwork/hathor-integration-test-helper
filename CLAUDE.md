@@ -3,10 +3,27 @@
 HTTP service that generates test wallets and provides race-condition-free
 funding for Hathor Wallet Lib integration tests.
 
-This file is currently a stub. As subsequent PRs land (foundation
-utilities, wallet endpoints, genesis lifecycle, UTXO pool, fund flow,
-resilience, integration test harness, project docs), the relevant
-architecture notes will be added incrementally per layer.
+Architecture notes are added incrementally per layer as PRs land.
+
+## Architecture
+
+### Genesis & readiness layer
+
+The funding subsystem boots in the background via `bootstrapFunding()`
+(`src/startup.ts`), gated by `FUNDING_ENABLED` (default `true`). It owns
+a coarse lifecycle phase (`idle → initializing → ready | disabled |
+degraded`) surfaced by `GET /status`. `src/genesis.service.ts` connects
+and syncs the genesis wallet; a bad seed or unreachable fullnode lands in
+`degraded` without taking the HTTP server down. `GET /ready` and
+`/status` share the pure `computeReadiness()` verdict in `src/routes.ts`.
+The UTXO pool (`src/utxo-pool.service.ts`) is a deliberate stub until the
+funding PRs; readiness therefore reports `utxo_pool_empty` once genesis
+is up. Endpoint and readiness-reason tables live in
+[`README.md`](README.md).
+
+Test seams (readiness, startup) use dependency injection, not
+`mock.module` — Bun's module mocks are process-global and leak across
+test files.
 
 ## Specification
 

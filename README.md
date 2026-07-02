@@ -31,6 +31,83 @@ bun run start    # boot the placeholder server
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the local quality gate
 and PR conventions.
 
+## HTTP endpoints
+
+| Method | Path              | Purpose                                            |
+| ------ | ----------------- | -------------------------------------------------- |
+| `GET`  | `/simpleWallet`   | Pop a pre-generated 24-word wallet with 22 addresses |
+| `GET`  | `/multisigWallet` | Generate N-of-M multisig wallets (`participants`, `numSignatures` query params) |
+| `GET`  | `/status`         | Operator diagnostic: readiness, pool counts, genesis address, bootstrap phase |
+| `GET`  | `/ready`          | Readiness probe — `200` when ready, `503` otherwise |
+| `GET`  | `/live`           | Liveness probe — always `200`                      |
+
+`/fund` and `/metrics` arrive with the funding milestone. A canonical
+OpenAPI document lands with the project-docs PR.
+
+### Readiness semantics
+
+`/ready` and `/status` share one verdict, evaluated in this order:
+
+| `readyReason`                | `ready` | Meaning                                          |
+| ---------------------------- | ------- | ------------------------------------------------ |
+| `funding_disabled`           | `true`  | `FUNDING_ENABLED=false` — wallet-generation-only mode |
+| `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or degraded)  |
+| `utxo_pool_empty`            | `false` | Genesis ready, but no spendable UTXOs yet        |
+| `ready`                      | `true`  | Genesis ready and the pool has funds             |
+
+`/status` additionally reports a `startup.phase` of `idle`,
+`initializing`, `ready`, `disabled`, or `degraded`. A bad seed or an
+unreachable fullnode lands in `degraded` **without** taking the service
+down — the wallet endpoints keep serving.
+
+### Health checks
+
+`/ready` is the endpoint to wire into a container `HEALTHCHECK` or a
+docker-compose `depends_on: { condition: service_healthy }` gate — it is
+a readiness probe, returning `200` only when the service can serve its
+intended workload. Use `/live` for liveness (restart-if-dead), not for
+gating dependents; `/status` is always `200` and is for humans.
+
+For the wallet-provider drop-in (`FUNDING_ENABLED=false`), `/ready`
+returns `200 funding_disabled` as soon as the server is up — a correct
+and future-proof healthcheck (the same gate keeps working once funding
+lands). Example compose service (the image ships `bun`, so no `curl`
+needed):
+
+```yaml
+test-wallet-helper:
+  image: hathor-ith
+  environment:
+    FUNDING_ENABLED: "false"
+  healthcheck:
+    test:
+      - CMD
+      - bun
+      - -e
+      - "fetch('http://127.0.0.1:3020/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    interval: 5s
+    timeout: 3s
+    retries: 10
+```
+
+> ⚠️ Do **not** gate on `/ready` with `FUNDING_ENABLED=true` yet: the
+> UTXO pool is still a stub, so `/ready` stays `503 utxo_pool_empty` and
+> the container never reports healthy. Once the funding/pool PRs land,
+> `/ready` will reach `200` and become the correct gate for the
+> funding-enabled stack too.
+
+## Funding modes
+
+`FUNDING_ENABLED` (default `true`) selects how the service runs:
+
+- **Funding enabled** (default) — at startup the service initializes the
+  genesis wallet against the configured fullnode and will offer on-chain
+  funding. This targets the hathor-wallet-lib integration stack, which
+  has a fullnode available.
+- **Funding disabled** (`FUNDING_ENABLED=false`) — genesis is never
+  touched and `/ready` reports `200 funding_disabled`. Use this for the
+  wallet-provider drop-in described below, which needs no fullnode.
+
 ## Running as a wallet provider
 
 The wallet endpoints can stand in for hathor-wallet-lib's static precalculated
@@ -40,10 +117,14 @@ serves wallet material only — funding stays Lib-managed.
 
 ```sh
 docker build -t hathor-ith .
-docker run --rm -p 3020:3020 hathor-ith
+docker run --rm -p 3020:3020 -e FUNDING_ENABLED=false hathor-ith
 ```
 
-With no env supplied the image uses defaults kept equal to wallet-lib's
+`FUNDING_ENABLED=false` keeps this a pure wallet provider: no fullnode is
+required and `/ready` reports `200`. Leave funding enabled only when a
+fullnode is reachable (e.g. the Lib integration stack).
+
+With no other env supplied the image uses defaults kept equal to wallet-lib's
 integration constants (testnet, the privnet node/tx-mining URLs, and the genesis
 seed), so it is plug-and-play for the Lib CI. Override any at run time, e.g.
 `-e HATHOR_NODE_URL=...`.

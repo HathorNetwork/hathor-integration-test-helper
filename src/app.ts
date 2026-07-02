@@ -1,6 +1,8 @@
 import {
   handleSimpleWallet,
   handleMultisigWallet,
+  handleStatus,
+  handleReady,
   handleLive,
 } from "./routes";
 import { ensureRequestId, jsonError, withRequestIdHeader } from "./http";
@@ -66,9 +68,8 @@ async function runHandler(
 }
 
 /**
- * Build the Bun.serve route table. Only the three PR2 endpoints are
- * registered here; PR3+ extend this by adding entries to the returned
- * object.
+ * Build the Bun.serve route table. Registers `/status` and `/ready`
+ * alongside the wallet endpoints; `/fund` and `/metrics` are not wired yet.
  */
 export function createRoutes() {
   return {
@@ -77,6 +78,12 @@ export function createRoutes() {
     },
     "/multisigWallet": {
       GET: withObservability("/multisigWallet", handleMultisigWallet),
+    },
+    "/status": {
+      GET: withObservability("/status", handleStatus),
+    },
+    "/ready": {
+      GET: withObservability("/ready", handleReady),
     },
     "/live": {
       GET: withObservability("/live", handleLive),
