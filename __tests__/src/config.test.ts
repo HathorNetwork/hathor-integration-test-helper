@@ -207,6 +207,87 @@ describe("loadConfig", () => {
     expect(urls.every((w) => typeof w.defaultValue === "string")).toBe(true);
   });
 
+  // FUNDING_ENABLED gates whether the service initializes the genesis wallet
+  // and attempts on-chain funding. It defaults to `true` because the primary
+  // deployment is the hathor-wallet-lib integration stack (which has a
+  // fullnode). The no-fullnode "wallet provider drop-in" opts out explicitly.
+  test("FUNDING_ENABLED defaults to true on empty env", () => {
+    const cfg = loadConfig({}, noWarn);
+    expect(cfg.FUNDING_ENABLED).toBe(true);
+  });
+
+  test("FUNDING_ENABLED parses an explicit false", () => {
+    expect(loadConfig({ FUNDING_ENABLED: "false" }, noWarn).FUNDING_ENABLED).toBe(
+      false,
+    );
+    expect(loadConfig({ FUNDING_ENABLED: "0" }, noWarn).FUNDING_ENABLED).toBe(
+      false,
+    );
+  });
+
+  test("FUNDING_ENABLED parses an explicit true", () => {
+    expect(loadConfig({ FUNDING_ENABLED: "true" }, noWarn).FUNDING_ENABLED).toBe(
+      true,
+    );
+    expect(loadConfig({ FUNDING_ENABLED: "1" }, noWarn).FUNDING_ENABLED).toBe(
+      true,
+    );
+  });
+
+  test("FUNDING_ENABLED is case-insensitive and trims whitespace", () => {
+    expect(loadConfig({ FUNDING_ENABLED: "  FALSE  " }, noWarn).FUNDING_ENABLED).toBe(
+      false,
+    );
+    expect(loadConfig({ FUNDING_ENABLED: "True" }, noWarn).FUNDING_ENABLED).toBe(
+      true,
+    );
+  });
+
+  test("FUNDING_ENABLED rejects an unparseable value", () => {
+    expect(() => loadConfig({ FUNDING_ENABLED: "maybe" })).toThrow(ConfigError);
+  });
+
+  test("GENESIS_SYNC_TIMEOUT_MS defaults to 120000", () => {
+    expect(loadConfig({}, noWarn).GENESIS_SYNC_TIMEOUT_MS).toBe(120_000);
+  });
+
+  test("GENESIS_SYNC_TIMEOUT_MS parses an override", () => {
+    expect(
+      loadConfig({ GENESIS_SYNC_TIMEOUT_MS: "5000" }, noWarn).GENESIS_SYNC_TIMEOUT_MS,
+    ).toBe(5000);
+  });
+
+  test("GENESIS_SYNC_TIMEOUT_MS rejects a sub-second value", () => {
+    expect(() => loadConfig({ GENESIS_SYNC_TIMEOUT_MS: "500" })).toThrow(ConfigError);
+  });
+
+  // Wallet-generation-only mode (FUNDING_ENABLED=false) must not fail on
+  // funding-only config — the fullnode endpoints are never used there.
+  test("funding disabled skips fullnode URL validation", () => {
+    expect(() =>
+      loadConfig(
+        {
+          FUNDING_ENABLED: "false",
+          HATHOR_NODE_URL: "not a url",
+          TX_MINING_URL: "also bad",
+        },
+        noWarn,
+      ),
+    ).not.toThrow();
+  });
+
+  test("funding disabled emits no fullnode-URL default warnings", () => {
+    const captured: ConfigWarning[] = [];
+    loadConfig({ FUNDING_ENABLED: "false" }, { onWarning: (w) => captured.push(w) });
+    expect(captured.some((w) => w.event === "config.using_default_url")).toBe(false);
+  });
+
+  test("funding enabled still validates fullnode URLs", () => {
+    expect(() =>
+      loadConfig({ FUNDING_ENABLED: "true", HATHOR_NODE_URL: "not a url" }),
+    ).toThrow(ConfigError);
+  });
+
   test("treats whitespace-only wallet credentials as fallback", () => {
     const captured: ConfigWarning[] = [];
     const cfg = loadConfig(

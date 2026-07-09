@@ -25,6 +25,24 @@ export interface AppConfig {
    * later milestone); defaulted now for forward-aligned deployment.
    */
   readonly GENESIS_SEED_WORDS: string;
+  /**
+   * Gates the funding subsystem: when `true` (the default), startup
+   * initializes the genesis wallet and the service offers on-chain
+   * funding. When `false`, genesis is never touched — the service runs
+   * in wallet-generation-only mode (no fullnode required), which is how
+   * the PrecalculatedWallets drop-in is deployed. Defaulting to `true`
+   * targets the primary consumer: the hathor-wallet-lib integration
+   * stack, which always has a fullnode available.
+   */
+  readonly FUNDING_ENABLED: boolean;
+  /**
+   * Upper bound (ms) on how long the genesis wallet may take to finish
+   * syncing before the bootstrap gives up and transitions to `degraded`.
+   * Guards against a fullnode that accepts the connection but never lets
+   * the wallet reach `isReady()` (stalled sync, wrong network), which
+   * would otherwise hang startup at `initializing` forever.
+   */
+  readonly GENESIS_SYNC_TIMEOUT_MS: number;
   readonly HATHOR_NODE_URL: string;
   readonly TX_MINING_URL: string;
   readonly TX_MIN_WEIGHT?: number;
@@ -141,6 +159,30 @@ function parseOptionalIntEnv(
     return undefined;
   }
   return parseIntEnv(env, key, raw, issues, constraints);
+}
+
+/**
+ * Parse a boolean env var. Accepts `true/false/1/0` (case-insensitive,
+ * surrounding whitespace trimmed); an empty/unset value falls back to
+ * `fallback`. Anything else is a hard config error — silently coercing a
+ * typo'd `"flase"` to `true` would mask an operator's intent to disable
+ * funding.
+ */
+function parseBoolEnv(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: boolean,
+  issues: string[],
+): boolean {
+  const raw = env[key]?.trim();
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const normalized = raw.toLowerCase();
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  issues.push(`${key} must be one of true/false/1/0, got "${raw}"`);
+  return fallback;
 }
 
 function parseOptionalTrimmedString(
@@ -281,10 +323,20 @@ export function loadConfig(
     );
   }
 
-  const HATHOR_NODE_URL_RAW = parseOptionalUrl(env, "HATHOR_NODE_URL", issues);
-  const TX_MINING_URL_RAW = parseOptionalUrl(env, "TX_MINING_URL", issues);
+  const FUNDING_ENABLED = parseBoolEnv(env, "FUNDING_ENABLED", true, issues);
+
   const HATHOR_NODE_URL_DEFAULT = "http://localhost:8083/v1a/";
   const TX_MINING_URL_DEFAULT = "http://localhost:8035/";
+  // The fullnode + tx-mining endpoints are funding-only. With funding
+  // disabled they are never used, so we neither validate them (a malformed
+  // leftover value must not block wallet-generation-only mode) nor warn about
+  // defaults — `*_RAW` stays undefined and the warning block below is skipped.
+  let HATHOR_NODE_URL_RAW: string | undefined;
+  let TX_MINING_URL_RAW: string | undefined;
+  if (FUNDING_ENABLED) {
+    HATHOR_NODE_URL_RAW = parseOptionalUrl(env, "HATHOR_NODE_URL", issues);
+    TX_MINING_URL_RAW = parseOptionalUrl(env, "TX_MINING_URL", issues);
+  }
   const HATHOR_NODE_URL = HATHOR_NODE_URL_RAW || HATHOR_NODE_URL_DEFAULT;
   const TX_MINING_URL = TX_MINING_URL_RAW || TX_MINING_URL_DEFAULT;
 
@@ -302,23 +354,34 @@ export function loadConfig(
   const GENESIS_SEED_WORDS =
     GENESIS_SEED_WORDS_RAW || GENESIS_SEED_WORDS_DEFAULT;
 
+  const GENESIS_SYNC_TIMEOUT_MS_DEFAULT = "120000";
+  const GENESIS_SYNC_TIMEOUT_MS = parseIntEnv(
+    env,
+    "GENESIS_SYNC_TIMEOUT_MS",
+    GENESIS_SYNC_TIMEOUT_MS_DEFAULT,
+    issues,
+    { min: 1000, max: 600_000 },
+  );
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
 
-  if (!HATHOR_NODE_URL_RAW) {
-    onWarning({
-      event: "config.using_default_url",
-      key: "HATHOR_NODE_URL",
-      defaultValue: HATHOR_NODE_URL_DEFAULT,
-    });
-  }
-  if (!TX_MINING_URL_RAW) {
-    onWarning({
-      event: "config.using_default_url",
-      key: "TX_MINING_URL",
-      defaultValue: TX_MINING_URL_DEFAULT,
-    });
+  if (FUNDING_ENABLED) {
+    if (!HATHOR_NODE_URL_RAW) {
+      onWarning({
+        event: "config.using_default_url",
+        key: "HATHOR_NODE_URL",
+        defaultValue: HATHOR_NODE_URL_DEFAULT,
+      });
+    }
+    if (!TX_MINING_URL_RAW) {
+      onWarning({
+        event: "config.using_default_url",
+        key: "TX_MINING_URL",
+        defaultValue: TX_MINING_URL_DEFAULT,
+      });
+    }
   }
   if (!WALLET_PASSWORD_RAW) {
     onWarning({
@@ -345,6 +408,8 @@ export function loadConfig(
     NETWORK: "testnet",
     ADDRESS_COUNT: 22,
     GENESIS_SEED_WORDS,
+    FUNDING_ENABLED,
+    GENESIS_SYNC_TIMEOUT_MS,
     HATHOR_NODE_URL,
     TX_MINING_URL,
     TX_MIN_WEIGHT,
