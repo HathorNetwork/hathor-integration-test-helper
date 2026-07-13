@@ -7,6 +7,7 @@ import {
   getPoolStats,
   getReservedKeys,
 } from "../../src/utxo-pool.service";
+import { config } from "../../src/config";
 
 // Each test starts from a clean pool. populateFromUtxos rebuilds the buckets
 // but deliberately preserves reservedSet across calls (it is the source of
@@ -21,6 +22,14 @@ beforeEach(() => {
 });
 
 describe("reservedSet invariants", () => {
+  // These tests seed test-sized 1000n UTXOs and reserve 500n small amounts.
+  // Both facts hinge on the default split amount (500n is "small" only while
+  // 500 <= UTXO_SPLIT_AMOUNT). Pin it so an env override fails loudly here
+  // rather than silently rerouting reservations down the large-amount path.
+  test("is built on the default split amount", () => {
+    expect(config.UTXO_SPLIT_AMOUNT).toBe(1000n);
+  });
+
   test("reserveUtxo records the UTXO in reservedSet", async () => {
     populateFromUtxos([{ txId: "tx-A", index: 0, value: 1000n }]);
 

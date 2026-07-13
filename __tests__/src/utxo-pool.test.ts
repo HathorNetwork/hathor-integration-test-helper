@@ -11,6 +11,7 @@ import {
   getReservedKeys,
 } from "../../src/utxo-pool.service";
 import { PoolExhaustedError, FundTimeoutError } from "../../src/errors";
+import { config } from "../../src/config";
 
 // Reset pool state before each test. populateFromUtxos([]) rebuilds the
 // buckets but deliberately preserves reservedSet (it is the source of
@@ -28,6 +29,18 @@ function resetPool() {
 describe("utxo-pool.service", () => {
   beforeEach(() => {
     resetPool();
+  });
+
+  // Several categorization tests use fixed amounts chosen around the split
+  // boundary (1000n exactly, 1050n within +10%, 950n below it). Those are only
+  // valid while UTXO_SPLIT_AMOUNT is its default, and the service reads the
+  // global config singleton at call time. Pin the assumption here so an env
+  // override fails with one clear message instead of scattering opaque
+  // assertion failures across the suite. We deliberately do NOT derive the
+  // boundary amounts from config: that would re-implement isTestSized's +10%
+  // rule in the test and lose the independent oracle.
+  test("is built on the default split amount", () => {
+    expect(config.UTXO_SPLIT_AMOUNT).toBe(1000n);
   });
 
   describe("populateFromUtxos", () => {
@@ -266,10 +279,14 @@ describe("utxo-pool.service", () => {
     });
 
     test("returns false when above threshold", () => {
-      const utxos = Array.from({ length: 20 }, (_, i) => ({
+      // Just past the refill threshold is enough; deriving the count keeps
+      // this aligned if REFILL_THRESHOLD is reconfigured. Values must be
+      // test-sized so they land in the bucket needsRefill() counts.
+      const count = config.REFILL_THRESHOLD + 1;
+      const utxos = Array.from({ length: count }, (_, i) => ({
         txId: `tx${i}`,
         index: 0,
-        value: 1000n,
+        value: config.UTXO_SPLIT_AMOUNT,
       }));
       populateFromUtxos(utxos);
       expect(needsRefill()).toBe(false);
