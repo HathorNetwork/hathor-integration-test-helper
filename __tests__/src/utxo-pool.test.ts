@@ -76,6 +76,24 @@ describe("utxo-pool.service", () => {
       expect(stats.testUtxos).toBe(0);
       expect(stats.largeUtxoAmount).toBe(500000n);
     });
+
+    test("hands a rescan-discovered large UTXO to a parked waiter", async () => {
+      populateFromUtxos([]);
+
+      // No large UTXO yet, so this parks a waiter instead of resolving.
+      const promise = reserveUtxo(50000n, { timeoutMs: 5000 });
+
+      // A concurrent rescan now reports a large-enough UTXO. It must reach
+      // the parked waiter, not merely land in the `largeUtxo` slot where the
+      // already-waiting request can never see it (it would time out instead).
+      populateFromUtxos([{ txId: "rescan-large", index: 0, value: 100000n }]);
+
+      const reserved = await promise;
+      expect(reserved.utxo.txId).toBe("rescan-large");
+      expect(reserved.source).toBe("large");
+      // The waiter consumed it, so the slot is empty.
+      expect(getPoolStats().largeUtxoAmount).toBeNull();
+    });
   });
 
   describe("reserveUtxo", () => {
@@ -209,6 +227,34 @@ describe("utxo-pool.service", () => {
 
       const reserved = await promise;
       expect(reserved.utxo.txId).toBe("returned");
+      expect(reserved.source).toBe("large");
+    });
+
+    test("keeps the larger UTXO as largeUtxo and demotes the smaller", () => {
+      populateFromUtxos([]);
+
+      returnChange({ txId: "small-large", index: 0, amount: 50000n });
+      expect(getPoolStats().largeUtxoAmount).toBe(50000n);
+
+      // A bigger change comes back. The large-reservation path only ever
+      // inspects `largeUtxo` (never leftovers), so the largest available
+      // output must sit in `largeUtxo` or a large request can starve while
+      // a sufficient UTXO hides in leftovers.
+      returnChange({ txId: "big-large", index: 0, amount: 100000n });
+      const stats = getPoolStats();
+      expect(stats.largeUtxoAmount).toBe(100000n);
+      expect(stats.leftoverUtxos).toBe(1); // the 50000 demoted, not lost
+    });
+
+    test("a large reservation can claim the largest returned change", async () => {
+      populateFromUtxos([]);
+
+      returnChange({ txId: "small-large", index: 0, amount: 50000n });
+      returnChange({ txId: "big-large", index: 0, amount: 100000n });
+
+      // Only the 100000 covers this; it must be reservable, not stranded.
+      const reserved = await reserveUtxo(80000n, { timeoutMs: 200 });
+      expect(reserved.utxo.txId).toBe("big-large");
       expect(reserved.source).toBe("large");
     });
   });

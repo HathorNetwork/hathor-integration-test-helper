@@ -109,6 +109,32 @@ function dispatchLargeUtxoToWaiter(utxo: Utxo): boolean {
 }
 
 /**
+ * Offer `utxo` as the pool's large output. A parked large-amount waiter it
+ * covers takes it first; otherwise the pool keeps whichever of `utxo` and the
+ * incumbent `largeUtxo` is larger and demotes the loser to `leftoverUtxos`.
+ *
+ * The large-reservation path in `reserveUtxo` only ever inspects `largeUtxo`
+ * (never leftovers), so the claimable slot must always hold the biggest
+ * available output — otherwise a large request could starve while a
+ * sufficient UTXO hides in leftovers. Every path that supplies a large output
+ * (`populateFromUtxos`, `returnChange`, `setLargeUtxo`) funnels through here so
+ * the waiter-dispatch and keep-largest rules stay consistent across them.
+ */
+function offerLargeUtxo(utxo: Utxo): void {
+  if (dispatchLargeUtxoToWaiter(utxo)) {
+    return;
+  }
+  if (largeUtxo === null) {
+    largeUtxo = utxo;
+  } else if (utxo.amount > largeUtxo.amount) {
+    leftoverUtxos.push(largeUtxo);
+    largeUtxo = utxo;
+  } else {
+    leftoverUtxos.push(utxo);
+  }
+}
+
+/**
  * Whether `amount` belongs in the test-sized bucket.
  *
  * The test bucket funds standard requests, whose default amount is exactly
@@ -167,14 +193,20 @@ export function populateFromUtxos(
     }
   }
 
-  largeUtxo = largestUtxo;
+  // Hand the discovered large output through the shared path: a large-amount
+  // reservation parked before this rescan must be woken by it, not left to
+  // time out while the UTXO sits idle in the slot.
+  if (largestUtxo !== null) {
+    offerLargeUtxo(largestUtxo);
+  }
 
+  const stats = getPoolStats();
   logger.info({
     event: "utxo_pool.populated",
     meta: {
-      testUtxos: testUtxos.length,
-      largeUtxoAmount: largeUtxo ? largeUtxo.amount.toString() : "0",
-      leftoverUtxos: leftoverUtxos.length,
+      testUtxos: stats.testUtxos,
+      largeUtxoAmount: stats.largeUtxoAmount?.toString() ?? "0",
+      leftoverUtxos: stats.leftoverUtxos,
       skippedReserved,
     },
   });
@@ -268,14 +300,7 @@ export function returnChange(utxo: Utxo): void {
   }
 
   if (utxo.amount > config.UTXO_SPLIT_AMOUNT) {
-    if (dispatchLargeUtxoToWaiter(utxo)) {
-      return;
-    }
-    if (largeUtxo === null) {
-      largeUtxo = utxo;
-    } else {
-      leftoverUtxos.push(utxo);
-    }
+    offerLargeUtxo(utxo);
     return;
   }
 
@@ -289,10 +314,7 @@ export function addTestUtxos(utxos: Utxo[]): void {
 
 /** Set the large UTXO (e.g. the change output of a split transaction). */
 export function setLargeUtxo(utxo: Utxo): void {
-  if (dispatchLargeUtxoToWaiter(utxo)) {
-    return;
-  }
-  largeUtxo = utxo;
+  offerLargeUtxo(utxo);
 }
 
 /** True when the test bucket has dropped below the configured refill threshold. */
