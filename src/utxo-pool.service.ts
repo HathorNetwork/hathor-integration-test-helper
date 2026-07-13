@@ -19,11 +19,19 @@ import { config } from "./config";
 import { logger } from "./logger";
 import { PoolExhaustedError, FundTimeoutError } from "./errors";
 
-/** An unspent transaction output identified by its txId and output index. */
+/**
+ * An unspent transaction output identified by its txId and output index.
+ *
+ * All fields are `readonly`: `${txId}:${index}` is the reservation key, and
+ * the pool's race-freedom guarantee depends on that key staying stable between
+ * `markReserved` and `releaseReservation`. A mutated identifier would strand
+ * the UTXO as permanently reserved; `amount` is likewise immutable for an
+ * on-chain output.
+ */
 export interface Utxo {
-  txId: string;
-  index: number;
-  amount: bigint;
+  readonly txId: string;
+  readonly index: number;
+  readonly amount: bigint;
 }
 
 /** Which pool bucket a reserved UTXO was drawn from. */
