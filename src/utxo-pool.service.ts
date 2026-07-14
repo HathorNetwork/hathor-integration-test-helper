@@ -240,20 +240,31 @@ export function reserveUtxo(amount: bigint): ReservedUtxo {
  *
  * Synchronous so the "is it free? → markReserved" decision is atomic within one
  * event-loop tick: two concurrent large requests that queried the wallet and
- * saw the same output cannot both win. Returns `null` if the UTXO is already
- * in-flight — or already sitting in the test bucket — so the caller can try the
- * next candidate (or re-query and wait, up to its own funding timeout).
+ * saw the same output cannot both win. Returns `null` (so the caller tries the
+ * next candidate, or re-queries and waits up to its own funding timeout) when:
  *
- * The `isPooled` check keeps the pool's available-XOR-reserved invariant
- * self-enforcing here rather than relying on the caller: reserving a pooled
- * UTXO without removing it from the bucket would let a concurrent `reserveUtxo`
- * hand out the same output. Exact-match `isTestSized` already stops a large
- * query from returning a pooled UTXO, so this is defense-in-depth. Coverage is
- * the caller's responsibility — it filtered the query by `amount_bigger_than`.
+ *  - the UTXO is not actually large (`<= UTXO_SPLIT_AMOUNT`). Large funding is
+ *    served from large outputs; a test-sized or dust candidate reaching here is
+ *    a caller/query error, so it is rejected (with a warn) rather than marked
+ *    in-flight. This also keeps reserveLarge from ever touching the test
+ *    bucket: pooled UTXOs are exactly the split amount, so `> UTXO_SPLIT_AMOUNT`
+ *    implies "not pooled" — the available-XOR-reserved invariant holds without
+ *    a separate bucket scan.
+ *  - the UTXO is already in-flight.
+ *
+ * Coverage of the specific request amount stays the caller's responsibility —
+ * it filtered the wallet query by `amount_bigger_than`.
  */
 export function reserveLarge(utxo: Utxo): ReservedUtxo | null {
   const key = utxoKey(utxo);
-  if (reservedSet.has(key) || isPooled(key)) {
+  if (utxo.amount <= config.UTXO_SPLIT_AMOUNT) {
+    logger.warn({
+      event: "utxo_pool.non_large_reserve_rejected",
+      meta: { key, amount: utxo.amount.toString() },
+    });
+    return null;
+  }
+  if (reservedSet.has(key)) {
     return null;
   }
   markReserved(utxo);

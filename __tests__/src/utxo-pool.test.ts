@@ -141,15 +141,21 @@ describe("utxo-pool.service", () => {
       expect(reserveLarge(utxo)).toBeNull();
     });
 
-    test("returns null for a UTXO already in the test bucket (invariant guard)", () => {
-      // The reservation authority enforces available-XOR-reserved: a pooled
-      // UTXO must never be reserved without leaving the bucket, or a concurrent
-      // reserveUtxo could hand out the same output (double-spend).
+    test("rejects a non-large UTXO and never touches the test bucket", () => {
+      // reserveLarge is for large outputs only. A candidate at or below the
+      // split amount reaching it — a stale caller, a query skew, or a pooled
+      // test UTXO — must be rejected, not marked in-flight. Because pooled
+      // UTXOs are exactly the split amount, rejecting `<= split` also
+      // guarantees reserveLarge never cannibalizes the test bucket.
       populateFromUtxos([{ txId: "pooled", index: 0, value: 1000n }]);
+
       expect(reserveLarge({ txId: "pooled", index: 0, amount: 1000n })).toBeNull();
-      // The UTXO stays available in the bucket, untouched.
-      expect(getPoolStats().testUtxos).toBe(1);
+      expect(reserveLarge({ txId: "fresh-split", index: 0, amount: 1000n })).toBeNull();
+      expect(reserveLarge({ txId: "dust", index: 0, amount: 500n })).toBeNull();
+
+      // Nothing was reserved, and the pooled UTXO stays available.
       expect(getReservedKeys()).toEqual([]);
+      expect(getPoolStats().testUtxos).toBe(1);
     });
 
     test("populateFromUtxos does not re-introduce a reserved large UTXO", () => {
