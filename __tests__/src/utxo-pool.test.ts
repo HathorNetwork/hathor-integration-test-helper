@@ -122,6 +122,17 @@ describe("utxo-pool.service", () => {
       populateFromUtxos([]);
       expect(() => reserveUtxo(50000n)).toThrow(/reserveLarge/);
     });
+
+    test("rejects a non-positive amount without touching the pool", () => {
+      // 0 or negative is an impossible request; without an up-front guard the
+      // `>= amount` find matches the head and drains a real UTXO for a fund
+      // that can never be built.
+      populateFromUtxos([{ txId: "t", index: 0, value: 1000n }]);
+      expect(() => reserveUtxo(0n)).toThrow(/positive/);
+      expect(() => reserveUtxo(-5n)).toThrow(/positive/);
+      expect(getPoolStats().testUtxos).toBe(1);
+      expect(getReservedKeys()).toEqual([]);
+    });
   });
 
   describe("reserveLarge", () => {

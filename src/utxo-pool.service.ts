@@ -215,10 +215,14 @@ export function populateFromUtxos(
  * input would build a tx the fullnode rejects as "invalid surplus of HTR".
  * Throws {@link PoolExhaustedError} when the bucket is empty.
  *
- * This path is for standard amounts only; a larger amount is misuse — large
- * funding is wallet-sourced via {@link reserveLarge}.
+ * Rejects a non-positive `amount` (an impossible request that would otherwise
+ * match and drain the head). This path is for standard amounts only; a larger
+ * amount is misuse — large funding is wallet-sourced via {@link reserveLarge}.
  */
 export function reserveUtxo(amount: bigint): ReservedUtxo {
+  if (amount <= 0n) {
+    throw new Error(`reserveUtxo requires a positive amount, got ${amount}`);
+  }
   if (amount > config.UTXO_SPLIT_AMOUNT) {
     throw new Error(
       `reserveUtxo serves amounts <= UTXO_SPLIT_AMOUNT; use reserveLarge for ${amount}`,
