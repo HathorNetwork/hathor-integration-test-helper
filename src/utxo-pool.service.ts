@@ -137,21 +137,19 @@ export function getReservedKeys(): string[] {
 }
 
 /**
- * Whether `amount` belongs in the test-sized bucket.
+ * Whether `amount` is a pool UTXO, i.e. exactly `UTXO_SPLIT_AMOUNT`.
  *
- * The test bucket funds standard requests, whose default amount is exactly
- * `UTXO_SPLIT_AMOUNT`. Funding reserves a single input with no top-up
- * selection, so a reserved UTXO must cover the request on its own — otherwise
- * the built tx carries an output larger than its input and the fullnode
- * rejects it as an "invalid surplus of HTR". The lower bound is therefore
- * `UTXO_SPLIT_AMOUNT` itself: a below-target output (e.g. 975 HTR change) is
- * not test-sized. The +10% upper bound admits slightly-larger change as
- * reusable test capacity; anything larger is served by wallet-sourced large
- * funding, not the pool.
+ * There is no margin. The split transaction mints outputs of exactly
+ * `UTXO_SPLIT_AMOUNT`, so those are the only outputs the pool funds standard
+ * requests with. Anything else — below-target change, a large output, or a
+ * near-miss — is not the pool's concern: the wallet holds it, and large
+ * funding queries the wallet live. Collapsing "test-sized" to a single exact
+ * value also removes the overlap band a large query could otherwise reach into
+ * (a slightly-larger pooled UTXO that also satisfies `amount_bigger_than`),
+ * which would let the same output be reserved as both a test and a large UTXO.
  */
 function isTestSized(amount: bigint): boolean {
-  const target = config.UTXO_SPLIT_AMOUNT;
-  return amount >= target && amount <= (target * 11n) / 10n;
+  return amount === config.UTXO_SPLIT_AMOUNT;
 }
 
 /**
@@ -210,15 +208,15 @@ export function populateFromUtxos(
 /**
  * Reserve a test-sized UTXO that covers `amount` for a funding transaction.
  *
- * Synchronous: the head normally qualifies (`isTestSized` keeps the bucket at
- * `>= UTXO_SPLIT_AMOUNT`), and first-sufficient keeps near-FIFO order while the
- * `>= amount` guard defends against any below-amount UTXO slipping in — funding
- * does not top up inputs. Throws {@link PoolExhaustedError} if the bucket holds
- * no covering UTXO.
+ * Synchronous, FIFO. Every pooled UTXO is exactly `UTXO_SPLIT_AMOUNT`, so for a
+ * standard request (`amount <= UTXO_SPLIT_AMOUNT`) the head always covers it.
+ * The `>= amount` find is defense-in-depth against a below-amount UTXO ever
+ * slipping into the bucket — funding does not top up inputs, so an undersized
+ * input would build a tx the fullnode rejects as "invalid surplus of HTR".
+ * Throws {@link PoolExhaustedError} when the bucket is empty.
  *
- * This path is for standard amounts only (`amount <= UTXO_SPLIT_AMOUNT`); a
- * larger amount is misuse — large funding is wallet-sourced via
- * {@link reserveLarge}.
+ * This path is for standard amounts only; a larger amount is misuse — large
+ * funding is wallet-sourced via {@link reserveLarge}.
  */
 export function reserveUtxo(amount: bigint): ReservedUtxo {
   if (amount > config.UTXO_SPLIT_AMOUNT) {
@@ -243,12 +241,19 @@ export function reserveUtxo(amount: bigint): ReservedUtxo {
  * Synchronous so the "is it free? → markReserved" decision is atomic within one
  * event-loop tick: two concurrent large requests that queried the wallet and
  * saw the same output cannot both win. Returns `null` if the UTXO is already
- * in-flight, so the caller can try the next candidate (or re-query and wait,
- * up to its own funding timeout). Coverage is the caller's responsibility — it
- * filtered the query by `amount_bigger_than`.
+ * in-flight — or already sitting in the test bucket — so the caller can try the
+ * next candidate (or re-query and wait, up to its own funding timeout).
+ *
+ * The `isPooled` check keeps the pool's available-XOR-reserved invariant
+ * self-enforcing here rather than relying on the caller: reserving a pooled
+ * UTXO without removing it from the bucket would let a concurrent `reserveUtxo`
+ * hand out the same output. Exact-match `isTestSized` already stops a large
+ * query from returning a pooled UTXO, so this is defense-in-depth. Coverage is
+ * the caller's responsibility — it filtered the query by `amount_bigger_than`.
  */
 export function reserveLarge(utxo: Utxo): ReservedUtxo | null {
-  if (reservedSet.has(utxoKey(utxo))) {
+  const key = utxoKey(utxo);
+  if (reservedSet.has(key) || isPooled(key)) {
     return null;
   }
   markReserved(utxo);
@@ -287,9 +292,21 @@ export function returnChange(utxo: Utxo): void {
   // the genesis wallet retains it on-chain.
 }
 
-/** Add freshly-split test-sized UTXOs to the test bucket. */
+/**
+ * Add freshly-split UTXOs to the test bucket. Split outputs are exactly
+ * `UTXO_SPLIT_AMOUNT`; a differently-sized input is a caller error and is
+ * rejected (not silently pooled) so the bucket only ever holds standard-size
+ * UTXOs — matching what `populateFromUtxos` admits.
+ */
 export function addTestUtxos(utxos: Utxo[]): void {
   for (const utxo of utxos) {
+    if (!isTestSized(utxo.amount)) {
+      logger.warn({
+        event: "utxo_pool.non_test_add_ignored",
+        meta: { key: utxoKey(utxo), amount: utxo.amount.toString() },
+      });
+      continue;
+    }
     if (admitToPool(utxo, "addTestUtxos")) {
       testUtxos.push(utxo);
     }

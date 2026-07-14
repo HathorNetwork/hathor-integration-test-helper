@@ -31,32 +31,32 @@ describe("utxo-pool.service", () => {
     resetPool();
   });
 
-  // Several categorization tests use fixed amounts chosen around the split
-  // boundary (1000n exactly, 1050n within +10%, 950n below it). Those are only
-  // valid while UTXO_SPLIT_AMOUNT is its default, and the service reads the
-  // global config singleton at call time. Pin the assumption here so an env
-  // override fails with one clear message instead of scattering opaque
-  // assertion failures across the suite. We deliberately do NOT derive the
-  // boundary amounts from config: that would re-implement isTestSized's +10%
-  // rule in the test and lose the independent oracle.
+  // Categorization tests use fixed amounts around the split value (1000n
+  // exactly, plus 1050n/950n as near-misses). "Test-sized" means EXACTLY
+  // UTXO_SPLIT_AMOUNT — there is no margin — so both near-misses are non-test.
+  // Those amounts are only valid while UTXO_SPLIT_AMOUNT is its default, and
+  // the service reads the global config singleton at call time. Pin it so an
+  // env override fails with one clear message instead of scattering opaque
+  // assertion failures across the suite.
   test("is built on the default split amount", () => {
     expect(config.UTXO_SPLIT_AMOUNT).toBe(1000n);
   });
 
   describe("populateFromUtxos", () => {
-    test("pools only test-sized UTXOs, ignoring non-test outputs", () => {
+    test("pools only exactly-split UTXOs, ignoring everything else", () => {
       populateFromUtxos([
         { txId: "tx1", index: 0, value: 1000n }, // exactly UTXO_SPLIT_AMOUNT
-        { txId: "tx2", index: 0, value: 1050n }, // within +10%
-        // 950 is BELOW UTXO_SPLIT_AMOUNT and 50000 is well above it. Neither
-        // is test-sized, so both are ignored: the wallet — not a pool mirror —
-        // is the source of truth for non-test outputs (large funding queries
-        // it live).
+        // 1050 is ABOVE the split, 950 is below it, 50000 is a large output.
+        // None equals the split, so none is pooled: a UTXO is either exactly
+        // the split amount or it is not the pool's concern (the wallet is the
+        // source of truth for non-test outputs, and large funding queries it
+        // live).
+        { txId: "tx2", index: 0, value: 1050n },
         { txId: "tx3", index: 0, value: 950n },
         { txId: "tx4", index: 0, value: 50000n },
       ]);
 
-      expect(getPoolStats().testUtxos).toBe(2);
+      expect(getPoolStats().testUtxos).toBe(1);
     });
 
     test("handles empty UTXO list", () => {
@@ -141,6 +141,17 @@ describe("utxo-pool.service", () => {
       expect(reserveLarge(utxo)).toBeNull();
     });
 
+    test("returns null for a UTXO already in the test bucket (invariant guard)", () => {
+      // The reservation authority enforces available-XOR-reserved: a pooled
+      // UTXO must never be reserved without leaving the bucket, or a concurrent
+      // reserveUtxo could hand out the same output (double-spend).
+      populateFromUtxos([{ txId: "pooled", index: 0, value: 1000n }]);
+      expect(reserveLarge({ txId: "pooled", index: 0, amount: 1000n })).toBeNull();
+      // The UTXO stays available in the bucket, untouched.
+      expect(getPoolStats().testUtxos).toBe(1);
+      expect(getReservedKeys()).toEqual([]);
+    });
+
     test("populateFromUtxos does not re-introduce a reserved large UTXO", () => {
       const utxo = { txId: "big", index: 0, amount: 100000n };
       reserveLarge(utxo);
@@ -195,7 +206,7 @@ describe("utxo-pool.service", () => {
   });
 
   describe("addTestUtxos", () => {
-    test("adds multiple UTXOs to the test pool", () => {
+    test("adds multiple exactly-split UTXOs to the test pool", () => {
       populateFromUtxos([]);
       addTestUtxos([
         { txId: "split1", index: 0, amount: 1000n },
@@ -203,6 +214,20 @@ describe("utxo-pool.service", () => {
         { txId: "split1", index: 2, amount: 1000n },
       ]);
       expect(getPoolStats().testUtxos).toBe(3);
+    });
+
+    test("ignores a non-split-sized UTXO", () => {
+      // addTestUtxos takes freshly-split outputs, which are exactly the split
+      // amount. A differently-sized input is a caller error and must not land
+      // in the FIFO (it would inflate needsRefill/stats or park an oversized
+      // output where a standard request could consume it).
+      populateFromUtxos([]);
+      addTestUtxos([
+        { txId: "ok", index: 0, amount: 1000n },
+        { txId: "toobig", index: 0, amount: 1050n },
+        { txId: "toosmall", index: 0, amount: 950n },
+      ]);
+      expect(getPoolStats().testUtxos).toBe(1);
     });
   });
 });
