@@ -4,14 +4,10 @@ import type { PoolStats } from "../../src/utxo-pool.service";
 
 const EMPTY_POOL: PoolStats = {
   testUtxos: 0,
-  leftoverUtxos: 0,
-  largeUtxoAmount: null,
 };
 
 const FUNDED_POOL: PoolStats = {
   testUtxos: 5,
-  leftoverUtxos: 0,
-  largeUtxoAmount: null,
 };
 
 // Pure readiness branch logic — the heart of /ready and /status. Tested by
@@ -38,20 +34,8 @@ describe("computeReadiness", () => {
     });
   });
 
-  test("genesis ready and pool funded → ready", () => {
+  test("genesis ready and test pool funded → ready", () => {
     expect(computeReadiness(true, true, FUNDED_POOL)).toEqual({
-      ready: true,
-      readyReason: "ready",
-    });
-  });
-
-  test("a large UTXO alone (no split yet) still counts as ready", () => {
-    const largeOnly: PoolStats = {
-      testUtxos: 0,
-      leftoverUtxos: 0,
-      largeUtxoAmount: 1_000_000n,
-    };
-    expect(computeReadiness(true, true, largeOnly)).toEqual({
       ready: true,
       readyReason: "ready",
     });

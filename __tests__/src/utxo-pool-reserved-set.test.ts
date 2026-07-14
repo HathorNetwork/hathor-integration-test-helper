@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import {
   populateFromUtxos,
   reserveUtxo,
+  reserveLarge,
   releaseReservation,
   returnChange,
   getPoolStats,
@@ -9,9 +10,9 @@ import {
 } from "../../src/utxo-pool.service";
 import { config } from "../../src/config";
 
-// Each test starts from a clean pool. populateFromUtxos rebuilds the buckets
-// but deliberately preserves reservedSet across calls (it is the source of
-// truth for in-flight UTXOs), so a fresh reservedSet needs an explicit
+// Each test starts from a clean pool. populateFromUtxos rebuilds the test
+// bucket but deliberately preserves reservedSet across calls (it is the source
+// of truth for in-flight UTXOs), so a fresh reservedSet needs an explicit
 // release of anything a prior test left reserved.
 beforeEach(() => {
   for (const key of getReservedKeys()) {
@@ -30,21 +31,21 @@ describe("reservedSet invariants", () => {
     expect(config.UTXO_SPLIT_AMOUNT).toBe(1000n);
   });
 
-  test("reserveUtxo records the UTXO in reservedSet", async () => {
+  test("reserveUtxo records the UTXO in reservedSet", () => {
     populateFromUtxos([{ txId: "tx-A", index: 0, value: 1000n }]);
 
-    const { utxo } = await reserveUtxo(500n);
+    const { utxo } = reserveUtxo(500n);
 
     expect(getReservedKeys()).toEqual([`${utxo.txId}:${utxo.index}`]);
   });
 
-  test("populateFromUtxos does NOT re-introduce a reserved UTXO", async () => {
+  test("populateFromUtxos does NOT re-introduce a reserved UTXO", () => {
     // Seed: one test-sized UTXO.
     populateFromUtxos([{ txId: "in-flight-tx", index: 0, value: 1000n }]);
 
     // Simulate a fund request: reserve removes it from the bucket and
     // registers it in reservedSet.
-    const { utxo } = await reserveUtxo(500n);
+    const { utxo } = reserveUtxo(500n);
     expect(utxo.txId).toBe("in-flight-tx");
     expect(getPoolStats().testUtxos).toBe(0);
 
@@ -62,13 +63,12 @@ describe("reservedSet invariants", () => {
 
     // Reserving again must hand out the fresh UTXO, not a duplicate of the
     // in-flight one.
-    const { utxo: second } = await reserveUtxo(500n);
-    expect(second.txId).toBe("fresh-tx");
+    expect(reserveUtxo(500n).utxo.txId).toBe("fresh-tx");
   });
 
-  test("releaseReservation makes the UTXO eligible for re-introduction", async () => {
+  test("releaseReservation makes the UTXO eligible for re-introduction", () => {
     populateFromUtxos([{ txId: "tx-B", index: 0, value: 1000n }]);
-    const { utxo } = await reserveUtxo(500n);
+    const { utxo } = reserveUtxo(500n);
 
     // While reserved, rescan skips it.
     populateFromUtxos([{ txId: "tx-B", index: 0, value: 1000n }]);
@@ -81,15 +81,53 @@ describe("reservedSet invariants", () => {
     expect(getPoolStats().testUtxos).toBe(1);
   });
 
-  test("returnChange leaves reservedSet untouched (caller releases explicitly)", async () => {
+  test("returnChange refuses to pool a still-reserved UTXO (release-before-return)", () => {
     populateFromUtxos([{ txId: "tx-C", index: 0, value: 1000n }]);
-    const { utxo } = await reserveUtxo(500n);
+    const { utxo } = reserveUtxo(500n);
 
+    // Returning a UTXO that is still reserved violates the available-XOR-
+    // reserved invariant. returnChange must NOT pool it (that would let a
+    // second request grab a UTXO the owner still holds); it drops it and
+    // leaves the reservation for the owner to release.
     returnChange(utxo);
-
-    // returnChange manipulates buckets only; the caller (fund.service) owns
-    // releaseReservation. This pins that contract so a future change to
-    // returnChange doesn't quietly take over the reservation lifecycle.
+    expect(getPoolStats().testUtxos).toBe(0);
     expect(getReservedKeys()).toEqual([`${utxo.txId}:${utxo.index}`]);
+
+    // Done in the documented order — release, then return — the UTXO is pooled.
+    expect(releaseReservation(utxo)).toBe(true);
+    returnChange(utxo);
+    expect(getPoolStats().testUtxos).toBe(1);
+    expect(getReservedKeys()).toEqual([]);
+  });
+
+  test("a change output already seen by a rescan is not pooled twice", () => {
+    populateFromUtxos([]);
+
+    // A fund tx's change output is observed on-chain by a rescan first.
+    populateFromUtxos([{ txId: "change", index: 1, value: 1000n }]);
+    expect(getPoolStats().testUtxos).toBe(1);
+
+    // The owner then returns the same change. It is already pooled, so
+    // returnChange must drop it — two bucket copies would let two requests
+    // each reserve the one physical output.
+    returnChange({ txId: "change", index: 1, amount: 1000n });
+    expect(getPoolStats().testUtxos).toBe(1);
+  });
+
+  test("a large reservation is race-free and re-reservable after release", () => {
+    // Large funding no longer parks waiters: the consumer queries the wallet
+    // and reserves a candidate through reserveLarge, which is synchronous so
+    // "is-it-free? -> markReserved" is atomic. Two concurrent requests that
+    // selected the same output cannot both win, and the double-hand the old
+    // waiter path allowed cannot occur.
+    const utxo = { txId: "big", index: 0, amount: 100000n };
+
+    expect(reserveLarge(utxo)).not.toBeNull();
+    expect(reserveLarge(utxo)).toBeNull(); // already in-flight
+
+    // Once the consuming tx settles the owner releases it; a later wallet query
+    // can legitimately hand it out again.
+    expect(releaseReservation(utxo)).toBe(true);
+    expect(reserveLarge(utxo)).not.toBeNull();
   });
 });
