@@ -181,3 +181,75 @@ A feature PR is a **slice** of the pending tail, diffed against current
 - [ ] Verified: whole tree typechecks and tests pass.
 - [ ] Meta/process docs sit at the tip, above feature work.
 - [ ] Pushed unsigned.
+
+## Worked example: the fund rebuild (2026-07-15)
+
+The first real rebuild under this workflow — replaying the funding
+subsystem onto `main` after the UTXO-pool PR merged — proved out the
+rules above and taught a few concrete lessons worth keeping.
+
+**The base had drifted far.** The merged pool PR was not a tweak of the
+north-star's version — review rewrote ~half the file: `reserveUtxo`
+went **async → synchronous**, the whole "large UTXO slot" was removed in
+favour of wallet-sourced large funding (`reserveLarge`), and the
+`UtxoSource` `"leftover"` variant was dropped. The north-star's genesis
+and pool commits were correspondingly stale, so they were dropped
+wholesale and only the 8 pending fund commits were replayed.
+
+**The dangerous conflicts were the ones `git` stayed silent on.** Of the
+8 replayed commits, `git` flagged textual conflicts in only two files
+(both just a docstring). Everything else applied "cleanly" — including a
+brand-new `fund.service.ts` that called `setLargeUtxo` and
+`await reserveUtxo(largeAmount)`, neither of which exists in the reviewed
+pool. `git` cannot see that; **the typecheck is what surfaced it** (three
+`Property 'largeUtxoAmount' does not exist on type 'PoolStats'` errors,
+plus a pile of call-signature mismatches). Treat a green `git` replay as
+step one, never as done.
+
+**Reconciliation rippled into the tests, in two layers.** The stale pool
+shape broke tests the typecheck caught (a fake returning
+`{ testUtxos, leftoverUtxos, largeUtxoAmount }`). But it also invalidated
+behavioural *assertions* the typecheck could not catch — a split test
+asserting the change output landed in a large slot, another asserting a
+`leftover` count. Those needed a human read of intent, not a compiler.
+Two tests that had differed only by the now-deleted `largeUtxoAmount`
+field collapsed into one.
+
+**A base change can force a genuine product decision.** With large
+outputs no longer visible in pool stats, `startup` could no longer cheaply
+tell "empty pool but a large exists → split" from "entirely empty → skip
+split, stay ready". The reconciliation had to *pick* a behaviour (kept:
+an entirely-empty wallet stays `ready` with an empty pool, it does not
+`degrade`) and that choice is exactly the kind of thing to flag to the
+human, not bury in a rebase. Reconciliation is not always mechanical.
+
+**Fold reconciliation into the commit that introduced the code.** To keep
+each pending commit correct-against-`main` (so it stays cleanly
+cherry-pickable), the fix-ups were folded into their origin commits with
+autosquash rather than tacked on as a trailing "fix everything" commit:
+
+```
+git add <ported files>
+git commit --fixup=<origin-sha>       # once per origin commit touched
+GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <base-sha>
+```
+
+**Signing gotcha during a rebuild.** `git cherry-pick --continue` and
+`git rebase` re-commit under the repo's `commit.gpgsign` setting and do
+**not** honour a `--no-gpg-sign` passed to `--continue`. On a signing-by-
+default setup this aborts mid-rebuild with `gpg: signing failed`. Since
+the north-star is unsigned anyway, run the rebuild's git operations with
+signing off — prefer the per-invocation form so no surprising persistent
+state is left behind:
+
+```
+git -c commit.gpgsign=false cherry-pick ...
+git -c commit.gpgsign=false rebase ...
+```
+
+**Reconciliation is a fair chance to improve the design.** Porting the
+large-funding path the base now prescribes was a natural moment to
+centralise "find a large wallet output and reserve it" into one helper
+reused by both `startup` and `fund.service`, instead of duplicating the
+old stat-reading logic in two places. Improving code you must touch
+anyway is in-scope; unrelated refactoring is not.
