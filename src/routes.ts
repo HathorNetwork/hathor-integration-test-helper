@@ -117,15 +117,15 @@ export interface ReadinessVerdict {
  * matters: the funding kill switch wins over everything (a disabled service
  * is intentionally healthy), then genesis liveness, then pool availability.
  *
- *  - funding off                   → ready    (wallet-generation-only mode)
- *  - genesis not yet synced        → not ready (genesis_wallet_not_ready)
- *  - genesis ready, pool empty     → not ready (utxo_pool_empty)
- *  - genesis ready, pool has funds → ready
+ *  - funding off                        → ready    (wallet-generation-only mode)
+ *  - genesis not yet synced             → not ready (genesis_wallet_not_ready)
+ *  - genesis ready, test pool empty     → not ready (utxo_pool_empty)
+ *  - genesis ready, test pool has funds → ready
  *
- * While the UTXO pool reports empty, `utxo_pool_empty` is the steady state
- * once genesis is up; the `ready` branch activates when the pool holds
- * spendable funds. Kept pure (no module reads) so it can be unit-tested by
- * passing inputs directly.
+ * Readiness gates on the *test* pool: it is the high-throughput path, and it is
+ * empty until the first split runs. Large funding is wallet-sourced and rides
+ * on genesis-wallet readiness, so it needs no separate term here. Kept pure (no
+ * module reads) so it can be unit-tested by passing inputs directly.
  */
 export function computeReadiness(
   fundingEnabled: boolean,
@@ -138,11 +138,7 @@ export function computeReadiness(
   if (!genesisReady) {
     return { ready: false, readyReason: "genesis_wallet_not_ready" };
   }
-  // TODO(funding): consult `leftoverUtxos` here once the UTXO pool is real.
-  // Whether a leftover UTXO counts as "spendable → ready" depends on the
-  // pool's reserveUtxo() source priority. The pool currently reports 0
-  // leftovers, so this branch is moot until then.
-  if (stats.testUtxos === 0 && stats.largeUtxoAmount === null) {
+  if (stats.testUtxos === 0) {
     return { ready: false, readyReason: "utxo_pool_empty" };
   }
   return { ready: true, readyReason: "ready" };
@@ -158,8 +154,8 @@ function currentReadiness(): ReadinessVerdict & { stats: PoolStats } {
 /**
  * GET /status — operator-facing diagnostic. Always 200; the readiness
  * verdict lives in the body alongside pool counts, the genesis address
- * (when known), and the bootstrap phase. Serialized via JSONBigInt because
- * `largeUtxoAmount` is a bigint once the real pool is populated.
+ * (when known), and the bootstrap phase. Serialized via JSONBigInt so any
+ * bigint fields added to the envelope survive stringification.
  */
 export function handleStatus(_req: Request): Response {
   const readiness = currentReadiness();

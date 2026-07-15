@@ -26,8 +26,6 @@ describe("readiness/status/live handlers (real modules)", () => {
     expect(body).toHaveProperty("ready", false);
     expect(body).toHaveProperty("readyReason", "genesis_wallet_not_ready");
     expect(body).toHaveProperty("testUtxos", 0);
-    expect(body).toHaveProperty("leftoverUtxos", 0);
-    expect(body).toHaveProperty("largeUtxoAmount", null);
     expect(body.genesisAddress).toBeNull();
     const startup = body.startup as { phase: string };
     expect(typeof startup.phase).toBe("string");
