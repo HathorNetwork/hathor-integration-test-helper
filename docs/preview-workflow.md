@@ -62,9 +62,13 @@ base and fix it up to fit.
 When `main` has advanced (one or more PRs merged) or the north-star
 branch has picked up direct improvements, rebuild:
 
-1. **Back up first.** Tag or branch the current tip
-   (`backup/preview-YYYYMMDD`) so nothing is unrecoverable. The remote
-   `origin/preview/final-state` and any state tags are also safety nets.
+1. **Back up first — with a tag, never a branch.** Tag the current tip
+   (`v0.0.1-YYYYMMDD-pre-<reason>`, e.g. `-pre-reslice`) so nothing is
+   unrecoverable. Use a *tag*, not a `backup/*` branch: a branch litters the
+   branch list and invites an accidental PR or push, whereas a tag is an
+   immovable, non-mergeable marker that records exactly "the state before X"
+   and stays out of the way. The remote `origin/preview/final-state` and the
+   periodic state tags are additional safety nets.
 2. **Identify the boundary.** List the north-star commits above the old
    base. Sort each into *merged* (its reviewed form is now in `main`) or
    *pending* (still owed to `main`).
@@ -204,12 +208,14 @@ was equally available.
   PRs get signed at their own push-ready moment, not here.
 - **State tags.** Snapshots of a good north-star state are tagged
   `v0.0.1-YYYYMMDD` so a rebuild has named recovery points and so
-  "improvements since the last state" have a clear lower bound.
+  "improvements since the last state" have a clear lower bound. Backups
+  taken *before* a rebuild or reslice are also tags
+  (`v0.0.1-YYYYMMDD-pre-<reason>`), never `backup/*` branches.
 - **Commit messages** follow the repo's Conventional Commits rules.
 
 ## Checklist for a rebuild
 
-- [ ] Backed up the current tip.
+- [ ] Backed up the current tip (tag, not branch).
 - [ ] Sorted every above-base commit into merged / pending.
 - [ ] Reset onto current `origin/main`.
 - [ ] Replayed the pending tail, reconciled against reviewed base.
@@ -289,3 +295,57 @@ centralise "find a large wallet output and reserve it" into one helper
 reused by both `startup` and `fund.service`, instead of duplicating the
 old stat-reading logic in two places. Improving code you must touch
 anyway is in-scope; unrelated refactoring is not.
+
+## Worked example: the fund reslice (2026-07-16)
+
+The `/fund` PR (one ~3.1k-line branch) was reviewed thoroughly and then
+**rejected for size, not correctness**. Re-shipping it as three smaller
+PRs — primitives + readiness, pool production, `/fund` endpoint — taught
+lessons distinct from a rebuild.
+
+**Reverse-drift: the carved PR can get *ahead* of the north-star.** A
+rebuild's usual decay is "`main` advances, the north-star's merged head
+goes stale." Here the opposite happened: the carved PR branch was hardened
+during review (a `split.service` extraction, four `fix:` commits, new
+tests) while the north-star sat still — so the north-star was stale
+against a branch that was supposed to be a *slice of it*. The fix is the
+same (rebuild the north-star), but the **source of truth is the reviewed
+PR branch's tree**, not the north-star's own older stack. Always diff the
+two before assuming the north-star is current.
+
+**A reslice is not a byte-preserving partition.** Splitting one reviewed
+tree into N parts that each build and pass tests *on their own* forces
+real compromises: intermediate states of a shared file (the metrics
+snapshot lists only split counters in PR2, gains fund counters in PR3), a
+`/status` field dropped in an early part and restored in a later one, a
+test import removed until the module it needs lands. So the gate is **not
+tree-identity** with the reviewed branch. The gates are: each part
+typechecks + tests green *standalone on `main`*, and the *union* is
+behaviourally the reviewed system. The residual diff against the reviewed
+branch is reviewed as a **compromise ledger** — every deviation must be an
+intentional, justified reslice artifact (e.g. a deliberate in-code note),
+not an accident.
+
+**Split shared files by hunk; keep the seam files whole.** Only the files
+that genuinely span parts (`routes.ts`: readiness vs `/fund` handlers;
+`metrics.ts`: split vs fund counters) need hunk-level surgery. Everything
+else is whole-file-per-part, which the existing `fund → split` file seam
+already made possible. Verify the layer dependency graph has no backward
+edges (`P3 → P2 → P1 → main`) *before* cutting — an import from a later
+part into an earlier one won't typecheck standalone.
+
+**Document deliberate "dead" code in the code itself.** A primitive that
+lands in an early part but has no caller until a later one (here
+`tx-observation`, added in PR1, consumed by the pool/`/fund` path in
+PR2/PR3) reads as dead code to a reviewer — human or AI — who will move to
+delete it. A short present-tense module note explaining its role in the
+subsystem is the cheapest way to pre-empt that. (This was the single
+intentional deviation from the reviewed tree in the reslice.)
+
+**The meta-lesson: size by reviewable prod-lines, up front.** The `/fund`
+work had *already* been divided once (`[pool]` then `[fund]`) and `[fund]`
+was still too big. A scope that feels divided can still be a monolith. The
+signal that matters is not raw diff (tests inflate it and carry low
+cognitive load) but **reviewable production lines** — estimate those for
+each intended PR *before* writing 3k lines, and cut on the natural file
+seam early, so a reslice is never needed a second time.
