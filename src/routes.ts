@@ -13,7 +13,7 @@ import { getMetricsSnapshot, recordFundSuccess } from "./metrics";
 import { InvalidRequestError, ServiceError, ServiceNotReadyError } from "./errors";
 
 /**
- * Route handlers for PR2. Each handler returns a `Response` — including
+ * Route handlers. Each handler returns a `Response` — including
  * for *expected* error conditions (the `withObservability` wrapper's
  * catch is reserved for truly unexpected throws). Caller-facing errors
  * are surfaced via `jsonErrorFromService` so the `{error, message,

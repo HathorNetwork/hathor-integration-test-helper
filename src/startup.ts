@@ -4,7 +4,12 @@ import {
   getGenesisWallet,
   waitForUtxoUnlock,
 } from "./genesis.service";
-import { getPoolStats, type PoolStats } from "./utxo-pool.service";
+import {
+  getPoolStats,
+  type PoolStats,
+  type ReservedUtxo,
+  type Utxo,
+} from "./utxo-pool.service";
 import {
   splitUtxo,
   reserveLargeFromWallet,
@@ -68,45 +73,90 @@ async function refreshPoolFromWallet(): Promise<void> {
 }
 
 /**
+ * Collaborators the initial-split routine depends on. Injectable so the retry/
+ * seeding logic is unit-testable with plain fakes (no fullnode, no real
+ * backoff waits) — the same DI-not-mock.module convention used elsewhere.
+ */
+export interface InitialSplitDeps {
+  readonly reserveLargeFromWallet: (minAmount: bigint) => Promise<ReservedUtxo | null>;
+  readonly waitForUtxoUnlock: (txId: string) => Promise<void>;
+  readonly splitUtxo: (utxo: Utxo) => Promise<void>;
+  readonly refreshPool: () => Promise<void>;
+  readonly getPoolStats: () => PoolStats;
+  readonly sleep: (ms: number) => Promise<void>;
+}
+
+/** Production wiring for {@link runInitialSplitWithRetry}. */
+function defaultInitialSplitDeps(): InitialSplitDeps {
+  return {
+    reserveLargeFromWallet,
+    waitForUtxoUnlock,
+    splitUtxo,
+    refreshPool: refreshPoolFromWallet,
+    getPoolStats,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
+}
+
+/**
  * Attempt the first UTXO split up to `maxAttempts` times with linear backoff,
  * refreshing the pool between attempts. The output to split is sourced from the
  * wallet via {@link reserveLargeFromWallet}. Production implementation of
  * {@link BootstrapDeps.runInitialSplit}.
+ *
+ * This runs only when the pool is empty (see {@link bootstrapFunding}), so its
+ * job is to leave the pool with at least one test UTXO. A required split that
+ * finds nothing to split is NOT a clean success: it would leave `/ready`
+ * reporting `200` (readiness gates on wallet funds, not the pool) while every
+ * standard `/fund` throws `POOL_EXHAUSTED` with nothing to refill it and no
+ * self-heal path. So the routine retries, and if it still cannot seed the pool
+ * it throws — the bootstrap records that as `degraded` rather than `ready`.
  */
-async function runInitialSplitWithRetry(maxAttempts: number): Promise<void> {
-  let lastError: string | null = null;
+export async function runInitialSplitWithRetry(
+  maxAttempts: number,
+  deps: InitialSplitDeps = defaultInitialSplitDeps(),
+): Promise<void> {
+  // A large output must yield at least one test UTXO plus change, i.e. hold at
+  // least 2 × UTXO_SPLIT_AMOUNT — the same threshold rescan and background
+  // refill use. (Below that, splitUtxo computes maxOutputs < 1 and skips.)
+  const minSplittable = config.UTXO_SPLIT_AMOUNT * 2n;
+  let lastError = "no output large enough to seed the pool";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const reserved = await reserveLargeFromWallet(config.UTXO_SPLIT_AMOUNT);
-    if (reserved === null) {
-      // Nothing large to split — not a startup failure: the bootstrap stays
-      // ready and a later fund/rescan can still populate the pool, so return
-      // cleanly rather than degrading.
-      logger.info({ event: "startup.initial_split_skipped_no_large" });
-      return;
-    }
+    const reserved = await deps.reserveLargeFromWallet(minSplittable);
 
-    try {
-      await waitForUtxoUnlock(reserved.utxo.txId);
-      await splitUtxo(reserved.utxo);
-      return;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : "Unknown split error";
+    if (reserved !== null) {
+      try {
+        await deps.waitForUtxoUnlock(reserved.utxo.txId);
+        await deps.splitUtxo(reserved.utxo);
+        if (deps.getPoolStats().testUtxos > 0) return;
+        lastError = "split produced no test UTXOs";
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : "Unknown split error";
+      }
       logger.warn({
         event: "startup.initial_split_failed",
         meta: { attempt, maxAttempts, error: lastError },
       });
-      await refreshPoolFromWallet();
+    } else {
+      logger.warn({
+        event: "startup.initial_split_no_large",
+        meta: { attempt, maxAttempts },
+      });
+    }
 
-      if (attempt < maxAttempts) {
-        const backoffMs = 1000 * attempt;
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
-      }
+    // A refresh may re-pool test-sized outputs that appeared meanwhile (genesis
+    // still settling, or a concurrent producer); if so, the pool is seeded.
+    await deps.refreshPool();
+    if (deps.getPoolStats().testUtxos > 0) return;
+
+    if (attempt < maxAttempts) {
+      await deps.sleep(1000 * attempt);
     }
   }
 
   throw new Error(
-    `Initial split failed after ${maxAttempts} attempts: ${lastError ?? "unknown"}`,
+    `Initial split could not seed the pool after ${maxAttempts} attempts: ${lastError}`,
   );
 }
 

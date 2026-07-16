@@ -1,10 +1,10 @@
 /**
- * Per-route HTTP metrics. Subset shipping with PR2; the fund-/split-/
- * rescan-specific counters land in their natural PRs (PR4/PR5).
+ * Per-route HTTP metrics plus funding-subsystem counters (fund, split,
+ * rescan).
  *
- * Snapshot is exposed via `getMetricsSnapshot` so future `/metrics`
- * route handlers and tests can read counters without reaching into
- * module state directly.
+ * The snapshot is exposed via `getMetricsSnapshot` so the `/metrics` route
+ * handler and tests can read counters without reaching into module state
+ * directly.
  */
 
 interface RouteMetric {

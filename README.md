@@ -54,7 +54,7 @@ Request body (`application/json`):
 | `address` | yes      | string          | Destination Hathor address (validated for the configured network) |
 | `amount`  | no       | number \| digit-string | Amount in the smallest unit; defaults to `UTXO_SPLIT_AMOUNT`. Use a digit-only string for values beyond the JS safe-integer range |
 
-Success (`200`): `{ "txId": "...", "amount": 1000, "utxoSource": "test" \| "leftover" \| "large" }`.
+Success (`200`): `{ "txId": "...", "amount": 1000, "utxoSource": "test" \| "large" }`.
 
 Error body (all failures): `{ "error": <code>, "message": <text>, "retryable": <bool> }`.
 

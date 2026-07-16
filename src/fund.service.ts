@@ -23,6 +23,7 @@ import {
   PoolExhaustedError,
   SplitInProgressError,
   UtxoStaleError,
+  FundTimeoutError,
 } from "./errors";
 
 /**
@@ -190,6 +191,39 @@ export async function reserveLargeFromWallet(
   return null;
 }
 
+/** Poll interval while waiting for a large output to become available. */
+const LARGE_UTXO_POLL_INTERVAL_MS = 500;
+
+/**
+ * Reserve a large output covering `amount`, waiting up to `timeoutMs` for one
+ * to become available. Per the RFC, a large request queues for a refill rather
+ * than failing immediately: large funding is wallet-sourced, so a covering
+ * output can appear mid-wait — a concurrent large request releases its
+ * reservation, or a split/refill leaves large change on-chain. The wait is
+ * passive (polling {@link reserveLargeFromWallet}); it does not itself trigger
+ * a split, which would only consume large outputs, not create them.
+ *
+ * The first attempt runs immediately, so the common case (a large output is
+ * already available) pays no polling latency. Returns the reserved output, or
+ * `null` at the deadline — the caller maps that to {@link FundTimeoutError}.
+ */
+export async function reserveLargeWithTimeout(
+  amount: bigint,
+  timeoutMs: number = config.FUND_TIMEOUT_MS,
+  pollIntervalMs: number = LARGE_UTXO_POLL_INTERVAL_MS,
+): Promise<ReservedUtxo | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const reserved = await reserveLargeFromWallet(amount);
+    if (reserved !== null) return reserved;
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+
+    await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, remaining)));
+  }
+}
+
 /**
  * Split a large UTXO into many test-sized UTXOs.
  * Used at startup and whenever the pool runs low.
@@ -253,22 +287,29 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
       skipSelection: true,
     });
 
-    const template = builder.build();
-    const tx = await wallet.buildTxTemplate(template, {
-      signTx: true,
-      pinCode: config.WALLET_PIN_CODE,
-    });
-
+    // Release-guard the whole build → sign → broadcast sequence: any throw
+    // (bad pin, wallet-lib error, mining rejection) must release the reserved
+    // large output, or it stays wedged in reservedSet forever.
+    let tx: Awaited<ReturnType<FundWallet["buildTxTemplate"]>>;
     try {
+      const template = builder.build();
+      tx = await wallet.buildTxTemplate(template, {
+        signTx: true,
+        pinCode: config.WALLET_PIN_CODE,
+      });
       await deps.runSendTransaction(wallet, tx);
     } catch (err) {
       releaseReservation(utxo);
       throw err;
     }
 
-    const txId = tx.hash!;
+    const txId = tx.hash;
+    if (!txId) {
+      releaseReservation(utxo);
+      throw new Error("Split transaction completed without a hash");
+    }
 
-    scheduleReservationRelease(wallet as unknown as TxObservationWallet, utxo, txId, "split");
+    scheduleReservationRelease(wallet, utxo, txId, "split");
 
     const newTestUtxos: Utxo[] = [];
     for (let i = 0; i < maxOutputs; i++) {
@@ -293,6 +334,12 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
       meta: { txId, createdUtxos: newTestUtxos.length },
     });
   } catch (err) {
+    // Defense-in-depth: the inner guard already releases on build/sign/send
+    // failure, but a throw during builder assembly would otherwise reach here
+    // unreleased. This only runs on a pre-broadcast failure — after a
+    // successful send, scheduleReservationRelease owns the release and nothing
+    // below it throws — so releasing here never races the observation path.
+    releaseReservation(utxo);
     const message = err instanceof Error ? err.message : "Unknown split error";
     lastSplitError = message;
     recordSplit(false);
@@ -306,16 +353,22 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
 /**
  * Defer releasing a reservation until the consuming tx has been observed
  * by the wallet (so a concurrent `rescanUtxoPool` cannot re-introduce
- * the just-spent UTXO into a bucket). Bounded by `OBSERVATION_TIMEOUT_MS`;
- * on timeout the reservation is released with a warn log.
+ * the just-spent UTXO into a bucket). Bounded by `timeoutMs` (default
+ * `OBSERVATION_TIMEOUT_MS`); on timeout the reservation is released with a
+ * warn log.
+ *
+ * Callers fire-and-forget (the release is intentionally out-of-band with the
+ * fund/split response). The promise is returned only so tests can await the
+ * deferred release; production code ignores it.
  */
-function scheduleReservationRelease(
+export function scheduleReservationRelease(
   wallet: TxObservationWallet,
   utxo: { txId: string; index: number },
   spendingTxId: string,
   context: "fund" | "split",
-): void {
-  awaitTxObserved(wallet, spendingTxId, config.OBSERVATION_TIMEOUT_MS)
+  timeoutMs: number = config.OBSERVATION_TIMEOUT_MS,
+): Promise<void> {
+  return awaitTxObserved(wallet, spendingTxId, timeoutMs)
     .then((observed) => {
       releaseReservation(utxo);
       if (!observed) {
@@ -326,7 +379,7 @@ function scheduleReservationRelease(
             parentTxId: utxo.txId,
             parentIndex: utxo.index,
             spendingTxId,
-            timeoutMs: config.OBSERVATION_TIMEOUT_MS,
+            timeoutMs,
           },
         });
       }
@@ -348,6 +401,11 @@ function scheduleReservationRelease(
 /** Result of a successful fund transaction. */
 export interface FundResult {
   txId: string;
+  /**
+   * The requested amount that was sent to the recipient — echoed back for the
+   * caller's convenience, not a re-read of the on-chain output. The authority
+   * for what settled is `txId` on the fullnode.
+   */
   amount: bigint;
   utxoSource: UtxoSource;
 }
@@ -439,9 +497,15 @@ export async function fundAddress(
   address: string,
   amount: bigint,
 ): Promise<FundResult> {
-  if (rescanInProgress) {
+  const pendingRescan = rescanInProgress;
+  if (pendingRescan) {
     logger.info({ event: "fund.waiting_for_rescan" });
-    await rescanInProgress;
+    // A rescan is best-effort pool repair; its failure must not bleed into this
+    // unrelated request (it would surface as a generic 500 for every coalesced
+    // waiter). Swallow it and proceed — attemptFund reserves from whatever the
+    // pool holds, or raises its own domain error. The rescan logs its own
+    // failure at the source.
+    await pendingRescan.catch(() => {});
   }
 
   return attemptFund(address, amount, 1);
@@ -469,10 +533,12 @@ async function attemptFund(
     }
   } else {
     // Large request: the pool serves only test-sized amounts, so source it
-    // from the wallet.
-    const large = await reserveLargeFromWallet(amount);
+    // from the wallet, waiting up to FUND_TIMEOUT_MS for a covering output to
+    // become available (RFC: large requests queue for a refill rather than
+    // failing immediately).
+    const large = await reserveLargeWithTimeout(amount);
     if (large === null) {
-      throw new PoolExhaustedError("No large UTXO available for this amount");
+      throw new FundTimeoutError(config.FUND_TIMEOUT_MS);
     }
     reserved = large;
   }
@@ -481,26 +547,31 @@ async function attemptFund(
   const wallet = deps.getGenesisWallet();
   const genesisAddr = deps.getGenesisAddress();
 
-  const builder = deps.newTemplateBuilder()
-    .addSetVarAction({ name: "recipient", value: address })
-    .addSetVarAction({ name: "change", value: genesisAddr })
-    .addRawInput({ txId: utxo.txId, index: utxo.index })
-    .addTokenOutput({
-      address: "{recipient}",
-      amount,
-    })
-    .addCompleteAction({
-      changeAddress: "{change}",
-      skipSelection: true,
+  // Everything after the reservation is release-guarded: build, sign, and
+  // broadcast can each throw (bad pin, wallet-lib error, mining rejection),
+  // and a throw outside the guard would strand `utxo` in reservedSet forever
+  // (rescan and admitToPool both skip reserved keys, so it never heals).
+  let tx: Awaited<ReturnType<FundWallet["buildTxTemplate"]>>;
+  try {
+    const builder = deps.newTemplateBuilder()
+      .addSetVarAction({ name: "recipient", value: address })
+      .addSetVarAction({ name: "change", value: genesisAddr })
+      .addRawInput({ txId: utxo.txId, index: utxo.index })
+      .addTokenOutput({
+        address: "{recipient}",
+        amount,
+      })
+      .addCompleteAction({
+        changeAddress: "{change}",
+        skipSelection: true,
+      });
+
+    const template = builder.build();
+    tx = await wallet.buildTxTemplate(template, {
+      signTx: true,
+      pinCode: config.WALLET_PIN_CODE,
     });
 
-  const template = builder.build();
-  const tx = await wallet.buildTxTemplate(template, {
-    signTx: true,
-    pinCode: config.WALLET_PIN_CODE,
-  });
-
-  try {
     await deps.runSendTransaction(wallet, tx);
   } catch (err) {
     if (retriesLeft > 0 && isStaleUtxoError(err)) {
@@ -516,21 +587,39 @@ async function attemptFund(
       return attemptFund(address, amount, retriesLeft - 1);
     }
     releaseReservation(utxo);
-    returnChange(utxo);
     if (isStaleUtxoError(err)) {
-      // Stale on the final attempt — RFC's UTXO_STALE response.
+      // Stale on the final attempt — RFC's UTXO_STALE response. The UTXO was
+      // spent externally, so it must NOT be returned to the pool: re-pooling a
+      // spent output would just fail the next request stale again.
       throw new UtxoStaleError(
         err instanceof Error ? err.message : "Reserved UTXO was already spent",
         { cause: err },
       );
     }
+    // Build/sign/broadcast failed but the UTXO was never spent — return it so
+    // it can be reused immediately instead of waiting for the next rescan.
+    returnChange(utxo);
     throw err;
   }
 
-  const txId = tx.hash!;
+  const txId = tx.hash;
+  if (!txId) {
+    // The send resolved but the built tx has no hash: we cannot observe the
+    // spending tx, and the input was likely already broadcast. Release the
+    // reservation (a later rescan reconciles the wallet's real state) but do
+    // not re-pool a possibly-spent output.
+    releaseReservation(utxo);
+    logger.error({ event: "fund.missing_tx_hash" });
+    throw new Error("Fund transaction completed without a hash");
+  }
 
-  scheduleReservationRelease(wallet as unknown as TxObservationWallet, utxo, txId, "fund");
+  scheduleReservationRelease(wallet, utxo, txId, "fund");
 
+  // Change is at output index 1 by construction: the template adds the
+  // recipient output first, then addCompleteAction appends the change output.
+  // returnChange is defensive regardless — it only re-pools an exactly
+  // test-sized output, so a non-change output slipping in is dropped, not
+  // mispooled.
   if (tx.outputs.length > 1) {
     const changeOutput = tx.outputs[1]!;
     const changeAmount = BigInt(changeOutput.value);
