@@ -31,6 +31,14 @@ const SYNC_CHECK_INTERVAL_MS = 500;
  * keeping the service alive for wallet-generation endpoints.
  */
 export async function initGenesisWallet(): Promise<void> {
+  // Idempotent: the genesis wallet is a process singleton. A second call is a
+  // caller bug — building another wallet would open a duplicate connection and
+  // orphan the first — so no-op with a warning.
+  if (wallet !== null) {
+    logger.warn({ event: "genesis.init_skipped_already_initialized" });
+    return;
+  }
+
   logger.info({ event: "genesis.starting" });
 
   walletLibConfig.setTxMiningUrl(config.TX_MINING_URL);
