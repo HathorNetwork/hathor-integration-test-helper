@@ -25,7 +25,6 @@ function fakeWallet(): FundWallet {
     async buildTxTemplate() {
       return { hash: "tx-fail", outputs: [{ value: 500 }, { value: 500 }] };
     },
-    async *getAvailableUtxos() {},
     async getTx(id: string) {
       return { id };
     },

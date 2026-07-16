@@ -34,7 +34,7 @@ function restoreSharedState(): void {
 let sendAttempts = 0;
 
 // Wallet fake exposing the surface fund.service touches:
-//   - buildTxTemplate / getAvailableUtxos for tx construction & rescan
+//   - buildTxTemplate for tx construction, getUtxos for rescan repopulation
 //   - getTx + 'new-tx' event for the observation-based reservation release
 function makeWallet(): FundWallet {
   const emitter = new EventEmitter();
@@ -45,8 +45,8 @@ function makeWallet(): FundWallet {
         outputs: [{ value: 500 }, { value: 500 }],
       };
     },
-    async *getAvailableUtxos() {
-      yield { txId: "rescanned-utxo", index: 0, value: 1000n };
+    async getUtxos() {
+      return { utxos: [{ tx_id: "rescanned-utxo", index: 0, amount: 1000n }] };
     },
     // Pretend every tx is already observed by the wallet — fund.service
     // can release reservations immediately without waiting on 'new-tx'.

@@ -42,7 +42,6 @@ function makeWallet(): FundWallet {
       }));
       return { hash: `split-tx-${buildCount}`, outputs };
     },
-    async *getAvailableUtxos() {},
     // Pretend the split tx is already observed so the reservation
     // release runs without waiting on a 'new-tx' event.
     async getTx(id: string) {

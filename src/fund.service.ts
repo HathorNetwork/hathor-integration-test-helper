@@ -48,13 +48,11 @@ export interface FundWallet extends TxObservationWallet {
     template: unknown,
     options: { signTx: boolean; pinCode: string },
   ): Promise<{ hash?: string | null; outputs: Array<{ value: number | bigint }> }>;
-  getAvailableUtxos(
-    options: { token: string },
-  ): AsyncIterable<{ txId: string; index: number; value: number | bigint }>;
   getUtxos(
     options: {
       token: string;
       amount_bigger_than?: bigint;
+      amount_smaller_than?: bigint;
       only_available_utxos?: boolean;
     },
   ): Promise<{ utxos: Array<{ tx_id: string; index: number; amount: bigint }> }>;
@@ -356,6 +354,28 @@ export interface FundResult {
 }
 
 /**
+ * Rebuild the test pool from the wallet's currently-available, pool-eligible
+ * outputs. The exact-size filter is pushed into the query: `amount_bigger_than`
+ * and `amount_smaller_than` are both strict, so `SPLIT - 1 < amount < SPLIT + 1`
+ * matches exactly `UTXO_SPLIT_AMOUNT`. Dust and large outputs are filtered by
+ * the wallet, not fetched and then discarded by {@link populateFromUtxos}.
+ */
+export async function repopulatePoolFromWallet(
+  wallet: Pick<FundWallet, "getUtxos">,
+): Promise<void> {
+  const split = config.UTXO_SPLIT_AMOUNT;
+  const { utxos } = await wallet.getUtxos({
+    token: NATIVE_TOKEN_UID,
+    amount_bigger_than: split - 1n,
+    amount_smaller_than: split + 1n,
+    only_available_utxos: true,
+  });
+  populateFromUtxos(
+    utxos.map((u) => ({ txId: u.tx_id, index: u.index, value: u.amount })),
+  );
+}
+
+/**
  * Re-query wallet-lib for available UTXOs and repopulate the pool.
  *
  * Called when a fund attempt fails because a UTXO was spent externally
@@ -370,18 +390,7 @@ export async function rescanUtxoPool(): Promise<void> {
     await new Promise((r) => setTimeout(r, 1_000));
 
     logger.info({ event: "rescan.started" });
-    const wallet = deps.getGenesisWallet();
-
-    const utxos: Array<{ txId: string; index: number; value: bigint }> = [];
-    for await (const utxo of wallet.getAvailableUtxos({ token: NATIVE_TOKEN_UID })) {
-      utxos.push({
-        txId: utxo.txId,
-        index: utxo.index,
-        value: BigInt(utxo.value),
-      });
-    }
-
-    populateFromUtxos(utxos);
+    await repopulatePoolFromWallet(deps.getGenesisWallet());
     recordRescan();
     lastRescanAt = new Date().toISOString();
     lastRescanError = null;

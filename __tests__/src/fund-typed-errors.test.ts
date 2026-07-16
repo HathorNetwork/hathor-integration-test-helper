@@ -33,9 +33,9 @@ function fakeWallet(): FundWallet {
       txCounter += 1;
       return { hash: `tx-${txCounter}`, outputs: [{ value: 500 }, { value: 500 }] };
     },
-    async *getAvailableUtxos() {
+    async getUtxos() {
       // Fresh UTXO for the retry after a rescan.
-      yield { txId: "fresh-after-rescan", index: 0, value: 1000n };
+      return { utxos: [{ tx_id: "fresh-after-rescan", index: 0, amount: 1000n }] };
     },
     async getTx(id: string) {
       return { id };

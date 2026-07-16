@@ -1,16 +1,15 @@
-import { NATIVE_TOKEN_UID } from "@hathor/wallet-lib/lib/constants";
 import {
   initGenesisWallet,
   isGenesisReady,
   getGenesisWallet,
   waitForUtxoUnlock,
 } from "./genesis.service";
+import { getPoolStats, type PoolStats } from "./utxo-pool.service";
 import {
-  populateFromUtxos,
-  getPoolStats,
-  type PoolStats,
-} from "./utxo-pool.service";
-import { splitUtxo, reserveLargeFromWallet } from "./fund.service";
+  splitUtxo,
+  reserveLargeFromWallet,
+  repopulatePoolFromWallet,
+} from "./fund.service";
 import { config } from "./config";
 import { logger } from "./logger";
 
@@ -65,16 +64,7 @@ export interface BootstrapDeps {
  * scratch. Production implementation of {@link BootstrapDeps.populatePoolFromWallet}.
  */
 async function refreshPoolFromWallet(): Promise<void> {
-  const wallet = getGenesisWallet();
-  const utxos: Array<{ txId: string; index: number; value: bigint }> = [];
-  for await (const utxo of wallet.getAvailableUtxos({ token: NATIVE_TOKEN_UID })) {
-    utxos.push({
-      txId: utxo.txId,
-      index: utxo.index,
-      value: BigInt(utxo.value),
-    });
-  }
-  populateFromUtxos(utxos);
+  await repopulatePoolFromWallet(getGenesisWallet());
 }
 
 /**
