@@ -8,6 +8,7 @@ import {
   reserveLarge,
   reserveUtxo,
 } from "../../src/utxo-pool.service";
+import { __resetFundStateForTest } from "../../src/fund.service";
 import {
   splitUtxo,
   __setFundDepsForTest,
@@ -19,6 +20,7 @@ import {
 // Restore the shared pool + fund-service singletons after each test.
 function restoreSharedState(): void {
   __resetFundDepsForTest();
+  __resetFundStateForTest();
   for (const key of getReservedKeys()) {
     const [txId, indexStr] = key.split(":");
     releaseReservation({ txId: txId!, index: Number(indexStr) });
