@@ -21,8 +21,8 @@ export interface AppConfig {
    * seed so the dockerized helper is plug-and-play for the Lib CI. Source of
    * truth: hathor-wallet-lib
    * `__tests__/integration/configuration/test-constants.ts` →
-   * `WALLET_CONSTANTS.genesis`. Not consumed at runtime yet (funding is a
-   * later milestone); defaulted now for forward-aligned deployment.
+   * `WALLET_CONSTANTS.genesis`. Consumed by the funding subsystem to connect
+   * and sync the genesis wallet (see `genesis.service.ts`).
    */
   readonly GENESIS_SEED_WORDS: string;
   /**
