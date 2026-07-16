@@ -3,11 +3,14 @@ import { getSimpleWalletFromCache } from "./wallet.cache";
 import { generateMultisigWallet } from "./wallet.service";
 import { isGenesisReady, isGenesisFunded, getGenesisAddress } from "./genesis.service";
 import { getPoolStats, type PoolStats } from "./utxo-pool.service";
+import { parseFundBody } from "./parse-fund-body";
+import { fundAddress, getFundingLifecycleState } from "./fund.service";
 import { getStartupState } from "./startup";
 import { config } from "./config";
-import { jsonErrorFromService } from "./http";
+import { jsonError, jsonErrorFromService } from "./http";
 import { logger } from "./logger";
-import { InvalidRequestError } from "./errors";
+import { getMetricsSnapshot, recordFundSuccess } from "./metrics";
+import { InvalidRequestError, ServiceError, ServiceNotReadyError } from "./errors";
 
 /**
  * Route handlers. Each handler returns a `Response` — including
@@ -202,20 +205,58 @@ export async function currentReadiness(
 }
 
 /**
+ * Genesis state the route handlers read, behind an injectable indirection.
+ * Handler tests drive the ready-and-funded path by overriding this rather than
+ * mutating the genesis singleton's `ready`/`address`: Bun shares module globals
+ * across test files, so a forced `ready` would leak into another file's
+ * readiness assertions (the same reason {@link ReadinessInputs} is injected).
+ * Defaults to the real genesis accessors; production never overrides it.
+ */
+interface RouteGenesisView {
+  ready: () => boolean;
+  address: () => string;
+}
+
+let routeGenesis: RouteGenesisView = {
+  ready: isGenesisReady,
+  address: getGenesisAddress,
+};
+
+/**
+ * Test-only: override the genesis view the handlers read (e.g. to exercise the
+ * ready path). Merges onto the current view; always pair with
+ * {@link __resetRouteGenesisForTest} so the override cannot leak across files.
+ */
+export function __setRouteGenesisForTest(view: Partial<RouteGenesisView>): void {
+  routeGenesis = { ...routeGenesis, ...view };
+}
+
+/** Test-only: restore the real genesis accessors. */
+export function __resetRouteGenesisForTest(): void {
+  routeGenesis = { ready: isGenesisReady, address: getGenesisAddress };
+}
+
+/** Readiness verdict as the route layer sees genesis (injectable in tests). */
+function routeReadiness() {
+  return currentReadiness({ genesisReady: routeGenesis.ready(), fundsQuery: isGenesisFunded });
+}
+
+/**
  * GET /status — operator-facing diagnostic. Always 200; the readiness
  * verdict lives in the body alongside pool counts, the genesis address
  * (when known), and the bootstrap phase. Serialized via JSONBigInt so any
  * bigint fields added to the envelope survive stringification.
  */
 export async function handleStatus(_req: Request): Promise<Response> {
-  const readiness = await currentReadiness();
+  const readiness = await routeReadiness();
   return new Response(
     JSONBigInt.stringify({
       ready: readiness.ready,
       readyReason: readiness.readyReason,
       ...readiness.stats,
-      genesisAddress: isGenesisReady() ? getGenesisAddress() : null,
+      genesisAddress: routeGenesis.ready() ? routeGenesis.address() : null,
       startup: getStartupState(),
+      funding: getFundingLifecycleState(),
     }),
     { headers: { "Content-Type": "application/json" } },
   );
@@ -223,7 +264,7 @@ export async function handleStatus(_req: Request): Promise<Response> {
 
 /** GET /ready — readiness probe. 200 when ready, 503 otherwise. */
 export async function handleReady(_req: Request): Promise<Response> {
-  const readiness = await currentReadiness();
+  const readiness = await routeReadiness();
   return new Response(
     JSONBigInt.stringify({
       ready: readiness.ready,
@@ -240,4 +281,78 @@ export async function handleReady(_req: Request): Promise<Response> {
 /** GET /live — liveness probe. Always 200; readiness lives at /ready. */
 export function handleLive(_req: Request): Response {
   return Response.json({ live: true });
+}
+
+/** Per-service sequence number for fund logs (observability only). */
+let fundSeq = 0;
+
+/**
+ * POST /fund — reserve a UTXO and send funds to the requested address.
+ *
+ * 503 SERVICE_NOT_READY until genesis has synced; 400/413 INVALID_REQUEST for
+ * a malformed body; on success 200 with `{txId, amount, utxoSource}`. Domain
+ * failures (`POOL_EXHAUSTED`, `SPLIT_IN_PROGRESS`, `UTXO_STALE`,
+ * `FUND_TIMEOUT`) arrive as {@link ServiceError}s and are mapped to their RFC
+ * response via {@link jsonErrorFromService}; anything else is a 500.
+ */
+export async function handleFund(req: Request): Promise<Response> {
+  if (!config.FUNDING_ENABLED) {
+    // Wallet-generation-only deployment: /fund is not part of its contract and
+    // genesis is never initialized, so SERVICE_NOT_READY (retryable) would tell
+    // clients to keep retrying an endpoint that can never succeed. Fail fast
+    // with a non-retryable error instead.
+    return jsonErrorFromService(
+      new InvalidRequestError(
+        "funding is disabled on this service (FUNDING_ENABLED=false)",
+      ),
+    );
+  }
+  if (!routeGenesis.ready()) {
+    return jsonErrorFromService(new ServiceNotReadyError());
+  }
+
+  const parsed = await parseFundBody(req);
+  if (parsed instanceof Response) {
+    return parsed;
+  }
+
+  const { address, amount } = parsed;
+
+  try {
+    const result = await fundAddress(address, amount);
+    fundSeq += 1;
+    recordFundSuccess();
+    const stats = getPoolStats();
+    logger.info({
+      event: "fund.sent",
+      meta: {
+        seq: fundSeq,
+        txId: result.txId,
+        testUtxos: stats.testUtxos,
+        utxoSource: result.utxoSource,
+        amount: result.amount.toString(),
+      },
+    });
+    return new Response(JSONBigInt.stringify(result), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      // The RFC's documented error codes are surfaced via their descriptors.
+      return jsonErrorFromService(err);
+    }
+    // The raw failure message is surfaced (not a generic string) deliberately:
+    // this is an integration-test helper consumed by trusted CI harnesses,
+    // where the real detail is exactly what a test author needs to debug. It is
+    // also logged for operators. This is not a public, untrusted-facing API, so
+    // the usual "don't leak internals" guard would only hide useful signal.
+    const message = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ event: "fund.failed", meta: { error: message } });
+    return jsonError(500, "INTERNAL_ERROR", message, false);
+  }
+}
+
+/** GET /metrics — JSON snapshot of request counts, latencies, and pool ops. */
+export function handleMetrics(_req: Request): Response {
+  return Response.json(getMetricsSnapshot());
 }
