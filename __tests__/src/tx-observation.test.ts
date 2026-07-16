@@ -48,6 +48,26 @@ describe("awaitTxObserved", () => {
     expect(await promise).toBe(false);
   });
 
+  test("catches a 'new-tx' that fires while getTx is still in flight", async () => {
+    // getTx resolves null only after a delay; the event fires during that
+    // window. If the listener were registered only after getTx resolved (the
+    // old ordering), this observation would be missed and the call would time
+    // out instead of resolving true.
+    const emitter = new EventEmitter();
+    const wallet = Object.assign(emitter, {
+      async getTx() {
+        await new Promise((r) => setTimeout(r, 30));
+        return null;
+      },
+    }) as unknown as TxObservationWallet & EventEmitter;
+
+    const promise = awaitTxObserved(wallet, "tx-race", 1_000);
+    // Fire synchronously, before the slow getTx resolves.
+    wallet.emit("new-tx", { tx_id: "tx-race" });
+
+    expect(await promise).toBe(true);
+  });
+
   test("survives getTx throwing and falls through to event/timeout path", async () => {
     const wallet = makeMockWallet({ getTxThrows: true });
     const promise = awaitTxObserved(wallet, "tx-5", 100);

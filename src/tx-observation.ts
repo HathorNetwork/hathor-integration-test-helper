@@ -25,20 +25,6 @@ export async function awaitTxObserved(
   txId: string,
   timeoutMs: number,
 ): Promise<boolean> {
-  // Fast path: tx may already be in storage by the time we get here
-  // (e.g. WS event arrived during the broadcast HTTP round-trip).
-  try {
-    if (await wallet.getTx(txId)) return true;
-  } catch (err) {
-    logger.warn({
-      event: "tx_observation.getTx_failed",
-      meta: {
-        txId,
-        error: err instanceof Error ? err.message : String(err),
-      },
-    });
-  }
-
   return new Promise<boolean>((resolve) => {
     let settled = false;
 
@@ -54,7 +40,28 @@ export async function awaitTxObserved(
       if (newTx?.tx_id === txId) finish(true);
     };
 
-    const timer = setTimeout(() => finish(false), timeoutMs);
+    // Subscribe BEFORE the storage check: a 'new-tx' event that arrives while
+    // getTx is in flight would otherwise be missed and fall through to the full
+    // timeout (releasing the reservation late).
     wallet.on("new-tx", handler);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+
+    // Fast path: the tx may already be in storage (its event could even have
+    // fired before we subscribed, e.g. during the broadcast HTTP round-trip).
+    // Re-check after subscribing so neither ordering loses the observation.
+    wallet
+      .getTx(txId)
+      .then((tx) => {
+        if (tx) finish(true);
+      })
+      .catch((err) => {
+        logger.warn({
+          event: "tx_observation.getTx_failed",
+          meta: {
+            txId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      });
   });
 }

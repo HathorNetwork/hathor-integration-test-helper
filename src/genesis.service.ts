@@ -214,6 +214,12 @@ export async function waitForRewardUnlock(
     return;
   }
 
+  // One block beyond wallet-lib's exact unlock height: its
+  // transaction.isHeightLocked frees a reward at
+  // `currentHeight >= blockHeight + reward_spend_min_blocks`, and we
+  // deliberately wait one extra block as a conservative margin so the split is
+  // never attempted on the exact boundary block. Kept pending live validation
+  // on a real fullnode before tightening to the exact height.
   const unlockHeight = blockHeight + rewardLock + 1;
   let currentHeight = await storage.getCurrentHeight();
   if (currentHeight >= unlockHeight) {
