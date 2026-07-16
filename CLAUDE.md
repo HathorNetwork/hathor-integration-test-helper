@@ -58,6 +58,12 @@ Conventional Commits format:
 - Body: wrap lines at 72 characters
 - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
+### Pull request descriptions
+
+PR body conventions live in
+[`docs/pr-descriptions.md`](docs/pr-descriptions.md) — structure, the
+scope-honestly rule, metadata, and a template for writing a PR body.
+
 ## Review rules
 
 PR review conventions live in [`docs/review-rules/`](docs/review-rules/)
