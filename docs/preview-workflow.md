@@ -160,6 +160,42 @@ A feature PR is a **slice** of the pending tail, diffed against current
   slice, so they are naturally excluded from feature PRs. (Planning and
   workflow docs are not feature-PR reviewer scope.)
 
+## Improving already-merged base code
+
+Not every change on the north-star is new feature work. Sometimes, while
+building the pending tail, you realise a *merged* interface should change
+— the reviewed base got something slightly wrong, or a new capability
+makes an old decision worth revisiting. The north-star is a fine place to
+make that improvement, but it needs handling distinct from both feature
+work and head-vs-base reconciliation:
+
+- **It is a base-touch.** The change edits code that already lives in
+  `main`, so its diff against `main` is a *modification*, not a pure
+  addition. Flag it as such — a reviewer seeing a merged function change
+  should know it is deliberate, not a stray rebase artifact.
+- **Decide where it lands.** Two clean homes:
+  - *Ride with a feature PR* that already touches the same area and whose
+    story it belongs to. Lowest overhead when the improvement is part of
+    the feature's reason to exist.
+  - *Stand alone as a small follow-up PR* when it is orthogonal to any
+    pending feature, or when you want the feature PR's diff to stay purely
+    additive for easier review.
+- **Keep it a separate commit** either way, so the "ride with / split
+  out" decision stays reversible until carve time — same reorder-freely,
+  squash-late discipline as the rest of the tail.
+
+**Worked example (2026-07-16).** Readiness (`computeReadiness`, merged in
+the genesis PR) originally gated `/ready` on the *test pool* being
+non-empty. Building the funding path made a better rule obvious: gate on
+whether the *wallet* holds funds — the source of truth — since the
+service can fund clients (small from the pool, large wallet-sourced) even
+with an empty pool between splits. That improvement edits merged base
+code (`utxo_pool_empty` → `wallet_unfunded`, and the function goes from
+pool-stats input to a `walletFunded` boolean). It was kept as its own
+`refactor:` commit in the feature stack, riding with the fund PR because
+it *is* the wallet-sourced-funding idea — but a one-commit follow-up PR
+was equally available.
+
 ## Conventions
 
 - **Unsigned.** `preview/final-state` is pushed unsigned. It is a
