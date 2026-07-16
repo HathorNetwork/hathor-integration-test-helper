@@ -68,3 +68,11 @@ scope-honestly rule, metadata, and a template for writing a PR body.
 
 PR review conventions live in [`docs/review-rules/`](docs/review-rules/)
 — one rule per file. New conventions go there, not inline here.
+
+## Planning & decomposition
+
+The north-star preview-branch workflow, how to size and cut PRs before
+writing them, and the remaining-work roadmap live in
+[`docs/preview-workflow.md`](docs/preview-workflow.md),
+[`docs/pr-decomposition-method.md`](docs/pr-decomposition-method.md), and
+[`docs/roadmap.md`](docs/roadmap.md).
