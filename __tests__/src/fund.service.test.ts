@@ -7,6 +7,7 @@ import {
 } from "../../src/utxo-pool.service";
 import {
   fundAddress,
+  reserveLargeFromWallet,
   __setFundDepsForTest,
   __resetFundDepsForTest,
   __resetFundStateForTest,
@@ -84,6 +85,59 @@ beforeEach(() => {
 
 afterEach(() => {
   restoreSharedState();
+});
+
+describe("reserveLargeFromWallet", () => {
+  type GetUtxosOptions = {
+    token: string;
+    amount_bigger_than?: bigint;
+    only_available_utxos?: boolean;
+  };
+  let getUtxosCalls: GetUtxosOptions[];
+  let availableLarge: Array<{ tx_id: string; index: number; amount: bigint }>;
+
+  // Wallet fake exposing only the getUtxos surface reserveLargeFromWallet uses;
+  // it records the query options so we can assert the size filter is pushed down.
+  function makeQueryWallet(): FundWallet {
+    return {
+      async getUtxos(options: GetUtxosOptions) {
+        getUtxosCalls.push(options);
+        return { utxos: availableLarge };
+      },
+    } as unknown as FundWallet;
+  }
+
+  beforeEach(() => {
+    getUtxosCalls = [];
+    availableLarge = [];
+    __setFundDepsForTest({ getGenesisWallet: makeQueryWallet });
+  });
+
+  test("pushes the size filter into the query and reserves a covering output", async () => {
+    availableLarge = [{ tx_id: "big", index: 2, amount: 50000n }];
+
+    const reserved = await reserveLargeFromWallet(30000n);
+
+    // The wallet does the filtering: amount_bigger_than is a strict '>', so a
+    // '>= minAmount' contract is expressed as minAmount - 1. only_available_utxos
+    // keeps locked outputs out of the candidate set.
+    expect(getUtxosCalls).toHaveLength(1);
+    expect(getUtxosCalls[0]!.amount_bigger_than).toBe(29999n);
+    expect(getUtxosCalls[0]!.only_available_utxos).toBe(true);
+
+    expect(reserved).not.toBeNull();
+    expect(reserved!.utxo).toEqual({ txId: "big", index: 2, amount: 50000n });
+    expect(reserved!.source).toBe("large");
+  });
+
+  test("returns null when the wallet exposes no covering output", async () => {
+    availableLarge = [];
+
+    const reserved = await reserveLargeFromWallet(30000n);
+
+    expect(reserved).toBeNull();
+    expect(getUtxosCalls).toHaveLength(1);
+  });
 });
 
 describe("fund.service stale UTXO recovery", () => {

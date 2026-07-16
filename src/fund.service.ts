@@ -51,6 +51,13 @@ export interface FundWallet extends TxObservationWallet {
   getAvailableUtxos(
     options: { token: string },
   ): AsyncIterable<{ txId: string; index: number; value: number | bigint }>;
+  getUtxos(
+    options: {
+      token: string;
+      amount_bigger_than?: bigint;
+      only_available_utxos?: boolean;
+    },
+  ): Promise<{ utxos: Array<{ tx_id: string; index: number; amount: bigint }> }>;
 }
 
 /** The external collaborators fund.service depends on. */
@@ -154,6 +161,11 @@ export function getFundingLifecycleState(): FundingLifecycleState {
  * atomically reserve it through the pool. Returns the reserved UTXO, or `null`
  * when the wallet currently exposes no output that large.
  *
+ * The size filter is pushed into the wallet query (`amount_bigger_than`) so
+ * wallet-lib returns only covering candidates — we never materialise the full
+ * UTXO set just to find one large output. `amount_bigger_than` is a strict `>`,
+ * so it is set to `minAmount - 1` to keep the `>= minAmount` contract.
+ *
  * Large funding is wallet-sourced (PR13): the pool keeps no large slot, so the
  * wallet — queried live — is the source of truth for large outputs. Atomicity
  * holds because {@link reserveLarge} marks the chosen output in-flight
@@ -166,12 +178,13 @@ export async function reserveLargeFromWallet(
   minAmount: bigint,
 ): Promise<ReservedUtxo | null> {
   const wallet = deps.getGenesisWallet();
-  for await (const u of wallet.getAvailableUtxos({ token: NATIVE_TOKEN_UID })) {
-    const amount = BigInt(u.value);
-    if (amount < minAmount) {
-      continue;
-    }
-    const reserved = reserveLarge({ txId: u.txId, index: u.index, amount });
+  const { utxos } = await wallet.getUtxos({
+    token: NATIVE_TOKEN_UID,
+    amount_bigger_than: minAmount - 1n,
+    only_available_utxos: true,
+  });
+  for (const u of utxos) {
+    const reserved = reserveLarge({ txId: u.tx_id, index: u.index, amount: u.amount });
     if (reserved !== null) {
       return reserved;
     }
