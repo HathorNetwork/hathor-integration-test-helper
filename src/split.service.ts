@@ -21,9 +21,9 @@ import { awaitTxObserved, type TxObservationWallet } from "./tx-observation";
  * wallet-sourced large reservation, and pool repopulation — plus the shared DI
  * seam through which both this module and the /fund path build transactions.
  *
- * The /fund request path (a later PR's `fund.service`) will depend on this
- * module, never the reverse. The two responsibilities — producing test UTXOs
- * vs. consuming them — are independent, so they live in separate files.
+ * The /fund request path (`fund.service`) depends on this module, never the
+ * reverse. The two responsibilities — producing test UTXOs vs. consuming them
+ * — are independent, so they live in separate files.
  */
 
 /**
@@ -100,9 +100,9 @@ export function __resetFundDepsForTest(): void {
   deps = defaultDeps();
 }
 
-// Split lifecycle state. Written here (splitUtxo); a later PR's /fund layer
-// will read it to map a pool-exhausted reservation to a SPLIT_IN_PROGRESS
-// response and to report split status.
+// Split lifecycle state. Written here (splitUtxo); the fund layer reads it to
+// map a pool-exhausted reservation to a SPLIT_IN_PROGRESS response and to
+// report split status (getFundingLifecycleState).
 let splitInProgress = false;
 let lastSplitAt: string | null = null;
 let lastSplitError: string | null = null;
