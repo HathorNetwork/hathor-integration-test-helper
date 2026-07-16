@@ -81,3 +81,9 @@ agent's outer loop.
   `uses:` reference in workflows and composite actions to a
   40-character commit SHA with a `# <version>` comment, so mutable
   tags cannot be re-pointed at malicious code.
+- [`no-guards-on-local-wallet-reads`](no-guards-on-local-wallet-reads.md)
+  — Don't wrap local wallet reads (`getUtxos` over synced storage) in
+  timeout/abort/retry machinery; they can't hang.
+- [`reservation-release-on-failure`](reservation-release-on-failure.md)
+  — Release every UTXO reservation on every failure path; `reservedSet`
+  leaks never self-heal.
