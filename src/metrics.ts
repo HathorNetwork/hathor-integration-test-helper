@@ -1,6 +1,6 @@
 /**
- * Per-route HTTP metrics plus UTXO-split counters. The fund and rescan
- * counters land alongside the /fund endpoint.
+ * Per-route HTTP metrics plus funding-subsystem counters (fund, split,
+ * rescan).
  *
  * The snapshot is exposed via `getMetricsSnapshot` so the `/metrics` route
  * handler and tests can read counters without reaching into module state
@@ -18,6 +18,8 @@ let routeMetrics = new Map<string, RouteMetric>();
 // Funding-subsystem counters. Kept as module-level primitives (not a map)
 // because the set is fixed and small; the /metrics snapshot exposes them
 // alongside the per-route table.
+let fundCount = 0;
+let staleUtxoRescans = 0;
 let splitCount = 0;
 let splitFailures = 0;
 
@@ -41,6 +43,17 @@ export function recordHttpRequest(
   if (status >= 400) m.errors += 1;
 }
 
+export interface RouteSnapshot {
+  requests: number;
+  errors: number;
+  avgLatencyMs: number;
+}
+
+/** Increment the successful fund transaction counter. */
+export function recordFundSuccess(): void {
+  fundCount += 1;
+}
+
 /** Record a UTXO split attempt, incrementing successes or failures. */
 export function recordSplit(success: boolean): void {
   if (success) {
@@ -50,19 +63,20 @@ export function recordSplit(success: boolean): void {
   splitFailures += 1;
 }
 
-export interface RouteSnapshot {
-  requests: number;
-  errors: number;
-  avgLatencyMs: number;
+/** Increment the stale-UTXO rescan counter. */
+export function recordRescan(): void {
+  staleUtxoRescans += 1;
 }
 
 export interface MetricsSnapshot {
   routes: Record<string, RouteSnapshot>;
+  fundCount: number;
+  staleUtxoRescans: number;
   splitCount: number;
   splitFailures: number;
 }
 
-/** Point-in-time view of the per-route counters and split operations. */
+/** Point-in-time view of the per-route counters and funding operations. */
 export function getMetricsSnapshot(): MetricsSnapshot {
   const routes: MetricsSnapshot["routes"] = {};
   for (const [route, m] of routeMetrics.entries()) {
@@ -75,12 +89,14 @@ export function getMetricsSnapshot(): MetricsSnapshot {
           : Number((m.totalLatencyMs / m.requests).toFixed(2)),
     };
   }
-  return { routes, splitCount, splitFailures };
+  return { routes, fundCount, staleUtxoRescans, splitCount, splitFailures };
 }
 
-/** Test-only: clear all per-route counters and split counters. */
+/** Test-only: clear all per-route counters and funding counters. */
 export function __resetMetricsForTest(): void {
   routeMetrics = new Map();
+  fundCount = 0;
+  staleUtxoRescans = 0;
   splitCount = 0;
   splitFailures = 0;
 }
