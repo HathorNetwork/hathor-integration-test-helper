@@ -19,6 +19,7 @@ function deps(overrides: Partial<InitialSplitDeps> = {}): InitialSplitDeps {
     reserveLargeFromWallet: async () => largeReserved,
     waitForUtxoUnlock: async () => {},
     splitUtxo: async () => {},
+    releaseReservation: () => {},
     refreshPool: async () => {},
     getPoolStats: (): PoolStats => ({ testUtxos: 0 }),
     sleep: async () => {}, // no real backoff wait
@@ -75,6 +76,25 @@ describe("runInitialSplitWithRetry", () => {
       }),
     );
     expect(calls).toBe(2);
+  });
+
+  test("releases the reserved output when the unlock wait fails", async () => {
+    // waitForUtxoUnlock runs before splitUtxo (which has its own release), so a
+    // rejection here must not leave the large output wedged in reservedSet.
+    const released: Array<{ txId: string; index: number }> = [];
+    await expect(
+      runInitialSplitWithRetry(
+        2,
+        deps({
+          waitForUtxoUnlock: async () => {
+            throw new Error("reward still locked");
+          },
+          releaseReservation: (u) => released.push(u),
+        }),
+      ),
+    ).rejects.toThrow("could not seed the pool");
+    // Released on every attempt (2), never left reserved.
+    expect(released).toEqual([largeReserved.utxo, largeReserved.utxo]);
   });
 
   test("treats a split that leaves the pool empty as a failure", async () => {

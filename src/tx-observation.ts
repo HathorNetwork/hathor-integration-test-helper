@@ -27,6 +27,11 @@ export async function awaitTxObserved(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    // `let` (not `const`) and assigned before `wallet.on` below: a wallet that
+    // invokes the listener synchronously during `on()` would call `finish()` —
+    // and reference `timer` — before it exists; a `const` in its temporal dead
+    // zone would throw a ReferenceError.
+    let timer: ReturnType<typeof setTimeout>;
 
     const finish = (observed: boolean) => {
       if (settled) return;
@@ -43,8 +48,8 @@ export async function awaitTxObserved(
     // Subscribe BEFORE the storage check: a 'new-tx' event that arrives while
     // getTx is in flight would otherwise be missed and fall through to the full
     // timeout (releasing the reservation late).
+    timer = setTimeout(() => finish(false), timeoutMs);
     wallet.on("new-tx", handler);
-    const timer = setTimeout(() => finish(false), timeoutMs);
 
     // Fast path: the tx may already be in storage (its event could even have
     // fired before we subscribed, e.g. during the broadcast HTTP round-trip).

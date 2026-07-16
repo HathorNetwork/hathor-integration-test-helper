@@ -6,6 +6,7 @@ import {
 } from "./genesis.service";
 import {
   getPoolStats,
+  releaseReservation,
   type PoolStats,
   type ReservedUtxo,
   type Utxo,
@@ -81,6 +82,7 @@ export interface InitialSplitDeps {
   readonly reserveLargeFromWallet: (minAmount: bigint) => Promise<ReservedUtxo | null>;
   readonly waitForUtxoUnlock: (txId: string) => Promise<void>;
   readonly splitUtxo: (utxo: Utxo) => Promise<void>;
+  readonly releaseReservation: (utxo: { txId: string; index: number }) => void;
   readonly refreshPool: () => Promise<void>;
   readonly getPoolStats: () => PoolStats;
   readonly sleep: (ms: number) => Promise<void>;
@@ -92,6 +94,7 @@ function defaultInitialSplitDeps(): InitialSplitDeps {
     reserveLargeFromWallet,
     waitForUtxoUnlock,
     splitUtxo,
+    releaseReservation,
     refreshPool: refreshPoolFromWallet,
     getPoolStats,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -133,6 +136,11 @@ export async function runInitialSplitWithRetry(
         lastError = "split produced no test UTXOs";
       } catch (err) {
         lastError = err instanceof Error ? err.message : "Unknown split error";
+        // waitForUtxoUnlock can reject with the output still reserved (splitUtxo
+        // releases on its own failure, but the unlock wait runs before it), so
+        // release here or the large output stays wedged in reservedSet and the
+        // retry can never re-reserve it. Idempotent, so double-release is safe.
+        deps.releaseReservation(reserved.utxo);
       }
       logger.warn({
         event: "startup.initial_split_failed",

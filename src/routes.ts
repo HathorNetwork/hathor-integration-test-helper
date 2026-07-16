@@ -161,8 +161,21 @@ export function computeReadiness(
 async function currentReadiness(): Promise<ReadinessVerdict & { stats: PoolStats }> {
   const stats = getPoolStats();
   const genesisReady = isGenesisReady();
-  const walletFunded =
-    config.FUNDING_ENABLED && genesisReady ? await isGenesisFunded() : false;
+  let walletFunded = false;
+  if (config.FUNDING_ENABLED && genesisReady) {
+    try {
+      walletFunded = await isGenesisFunded();
+    } catch (err) {
+      // A wallet/storage hiccup on the funds query must not turn a readiness
+      // probe into a 500 — that breaks orchestrator health checks. Treat it as
+      // "not funded": the probe reports 503 wallet_unfunded and self-corrects on
+      // the next poll once the wallet answers again.
+      logger.warn({
+        event: "readiness.funds_query_failed",
+        meta: { error: err instanceof Error ? err.message : String(err) },
+      });
+    }
+  }
   const verdict = computeReadiness(config.FUNDING_ENABLED, genesisReady, walletFunded);
   return { ...verdict, stats };
 }
@@ -222,6 +235,17 @@ let fundSeq = 0;
  * response via {@link jsonErrorFromService}; anything else is a 500.
  */
 export async function handleFund(req: Request): Promise<Response> {
+  if (!config.FUNDING_ENABLED) {
+    // Wallet-generation-only deployment: /fund is not part of its contract and
+    // genesis is never initialized, so SERVICE_NOT_READY (retryable) would tell
+    // clients to keep retrying an endpoint that can never succeed. Fail fast
+    // with a non-retryable error instead.
+    return jsonErrorFromService(
+      new InvalidRequestError(
+        "funding is disabled on this service (FUNDING_ENABLED=false)",
+      ),
+    );
+  }
   if (!isGenesisReady()) {
     return jsonErrorFromService(new ServiceNotReadyError());
   }
@@ -256,6 +280,11 @@ export async function handleFund(req: Request): Promise<Response> {
       // The RFC's documented error codes are surfaced via their descriptors.
       return jsonErrorFromService(err);
     }
+    // The raw failure message is surfaced (not a generic string) deliberately:
+    // this is an integration-test helper consumed by trusted CI harnesses,
+    // where the real detail is exactly what a test author needs to debug. It is
+    // also logged for operators. This is not a public, untrusted-facing API, so
+    // the usual "don't leak internals" guard would only hide useful signal.
     const message = err instanceof Error ? err.message : "Unknown error";
     logger.error({ event: "fund.failed", meta: { error: message } });
     return jsonError(500, "INTERNAL_ERROR", message, false);

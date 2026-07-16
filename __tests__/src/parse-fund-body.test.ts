@@ -39,6 +39,21 @@ describe("parseFundBody", () => {
     expect(result.address).toBe(validAddress);
   });
 
+  test.each(["null", "[]", "42", "\"hi\""])(
+    "returns 400 (not 500) for non-object JSON body %s",
+    async (raw) => {
+      // Regression: `JSON.parse("null")` is valid JSON but destructuring it
+      // throws a TypeError, which must map to 400 INVALID_REQUEST, not a 500.
+      const result = await parseFundBody(fundReq(raw));
+      expect(isResponse(result)).toBe(true);
+      if (!isResponse(result)) return;
+      expect(result.status).toBe(400);
+      const body = (await result.json()) as { error: string; retryable: boolean };
+      expect(body.error).toBe("INVALID_REQUEST");
+      expect(body.retryable).toBe(false);
+    },
+  );
+
   test("returns 400 when address is missing", async () => {
     const result = await parseFundBody(
       fundReq(JSON.stringify({ amount: 100 })),

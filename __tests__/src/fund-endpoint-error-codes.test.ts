@@ -76,7 +76,9 @@ afterEach(() => {
     releaseReservation({ txId: txId!, index: Number(indexStr) });
   }
   populateFromUtxos([]);
-  __setGenesisStateForTest({ ready: false, address: null });
+  // Clear the funded override too: __setGenesisStateForTest only mutates
+  // supplied fields, so leaving it set makes later readiness tests order-dependent.
+  __setGenesisStateForTest({ ready: false, address: null, funded: null });
 });
 
 describe("POST /fund maps errors to RFC responses", () => {

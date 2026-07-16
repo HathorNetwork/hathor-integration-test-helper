@@ -214,6 +214,13 @@ export async function reserveLargeWithTimeout(
 ): Promise<ReservedUtxo | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    // The deadline is enforced between queries, not around each query, on
+    // purpose: reserveLargeFromWallet's getUtxos is a synchronous in-process
+    // read of the wallet's already-synced UTXO store (not a fullnode round-trip
+    // — see genesis.service.isGenesisFunded), so it returns promptly and cannot
+    // hang. Wrapping this local read in an AbortSignal/timeout race (wallet-lib
+    // exposes no cancellation anyway) would add machinery for a stall that this
+    // call path can't produce.
     const reserved = await reserveLargeFromWallet(amount);
     if (reserved !== null) return reserved;
 
@@ -305,6 +312,12 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
 
     const txId = tx.hash;
     if (!txId) {
+      // No hash means we can't observe the spending tx, so we can't defer the
+      // release — release now. This is safe: repopulation only ever pools the
+      // wallet's *available* outputs, so if the send did spend this input the
+      // wallet won't report it and it can't be re-pooled; if it didn't spend,
+      // re-pooling it is correct. Holding it reserved forever is the worse
+      // option (a rescan/admit skips reserved keys, so it would never heal).
       releaseReservation(utxo);
       throw new Error("Split transaction completed without a hash");
     }
@@ -605,9 +618,11 @@ async function attemptFund(
   const txId = tx.hash;
   if (!txId) {
     // The send resolved but the built tx has no hash: we cannot observe the
-    // spending tx, and the input was likely already broadcast. Release the
-    // reservation (a later rescan reconciles the wallet's real state) but do
-    // not re-pool a possibly-spent output.
+    // spending tx, so we can't defer the release. Release now and do NOT
+    // returnChange a possibly-spent output. This can't re-introduce a spent
+    // UTXO: repopulation pools only the wallet's *available* set, so a rescan
+    // won't re-pool an input the broadcast already spent. Holding it reserved
+    // forever is worse — reserved keys are skipped by rescan/admit and never heal.
     releaseReservation(utxo);
     logger.error({ event: "fund.missing_tx_hash" });
     throw new Error("Fund transaction completed without a hash");

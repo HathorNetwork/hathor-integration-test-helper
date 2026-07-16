@@ -1,7 +1,6 @@
 import { config } from "./config";
 import { isValidHathorAddress } from "./address";
-import { jsonErrorFromService } from "./http";
-import { InvalidRequestError } from "./errors";
+import { jsonError } from "./http";
 
 /**
  * Successful result of parsing a /fund request body.
@@ -12,16 +11,12 @@ export interface ParsedFundBody {
 }
 
 function invalid(message: string, status = 400): Response {
-  // The RFC defines a single INVALID_REQUEST code for malformed input.
-  // Status varies (400 for bad fields; 413 for oversized body) but the
-  // body shape is uniform: { error: "INVALID_REQUEST", message, retryable: false }.
-  const res = jsonErrorFromService(new InvalidRequestError(message));
-  if (status === 400) return res;
-  return new Response(res.body, {
-    status,
-    statusText: res.statusText,
-    headers: res.headers,
-  });
+  // The RFC defines a single INVALID_REQUEST code for malformed input. Status
+  // varies (400 for bad fields; 413 for oversized body) but the body shape is
+  // uniform: { error: "INVALID_REQUEST", message, retryable: false }. Build it
+  // directly rather than rewrapping another Response's body stream (stream
+  // reuse semantics differ across runtimes).
+  return jsonError(status, "INVALID_REQUEST", message, false);
 }
 
 /**
@@ -62,14 +57,24 @@ export async function parseFundBody(
     );
   }
 
-  let body: { address?: unknown; amount?: unknown };
+  let parsed: unknown;
   try {
-    body = JSON.parse(rawBody) as { address?: unknown; amount?: unknown };
+    parsed = JSON.parse(rawBody);
   } catch {
     return invalid("Invalid JSON body");
   }
 
-  const { address, amount: rawAmount } = body;
+  // Reject null, arrays, and primitives before destructuring: `JSON.parse`
+  // accepts all of them, and `const { address } = null` throws a TypeError that
+  // would otherwise surface as a 500 instead of the RFC's 400 INVALID_REQUEST.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return invalid("body must be a JSON object");
+  }
+
+  const { address, amount: rawAmount } = parsed as {
+    address?: unknown;
+    amount?: unknown;
+  };
 
   if (!address || typeof address !== "string" || address.trim() === "") {
     return invalid("address is required and must be a non-empty string");
