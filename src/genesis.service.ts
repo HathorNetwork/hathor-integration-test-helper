@@ -1,7 +1,7 @@
 import HathorWallet from "@hathor/wallet-lib/lib/new/wallet";
 import WalletConnection from "@hathor/wallet-lib/lib/new/connection";
 import walletLibConfig from "@hathor/wallet-lib/lib/config";
-import { TX_WEIGHT_CONSTANTS } from "@hathor/wallet-lib/lib/constants";
+import { TX_WEIGHT_CONSTANTS, NATIVE_TOKEN_UID } from "@hathor/wallet-lib/lib/constants";
 import Transaction from "@hathor/wallet-lib/lib/models/transaction";
 import { config } from "./config";
 import { logger } from "./logger";
@@ -122,16 +122,44 @@ export function isGenesisReady(): boolean {
 }
 
 /**
- * Test-only: force the genesis readiness flag and address without a fullnode,
- * so route/handler tests can exercise the ready path via dependency injection
- * (not `mock.module`, which leaks process-globally across Bun test files).
+ * Test-only override for {@link isGenesisFunded}. `null` means "no override —
+ * query the real wallet". Set through {@link __setGenesisStateForTest} so
+ * route/handler tests can exercise funded/unfunded readiness without a wallet.
+ */
+let fundedOverrideForTest: boolean | null = null;
+
+/**
+ * Whether the genesis wallet currently holds any spendable native-token UTXOs.
+ *
+ * Readiness is based on the wallet — the source of truth — not the test pool:
+ * as long as the wallet has funds, `/fund` can serve clients (small requests
+ * from the pool, large requests wallet-sourced) even when the test pool is
+ * momentarily empty. A single `getUtxos` call answers it; `getUtxos` reads the
+ * wallet's local synced UTXO store, so this is a cheap in-process lookup, not a
+ * fullnode round-trip.
+ */
+export async function isGenesisFunded(): Promise<boolean> {
+  if (fundedOverrideForTest !== null) {
+    return fundedOverrideForTest;
+  }
+  const details = await getGenesisWallet().getUtxos({ token: NATIVE_TOKEN_UID });
+  return details.total_utxos_available > 0n;
+}
+
+/**
+ * Test-only: force the genesis readiness flag, address, and funded verdict
+ * without a fullnode, so route/handler tests can exercise the ready path via
+ * dependency injection (not `mock.module`, which leaks process-globally across
+ * Bun test files). Pass `funded: null` to drop the override.
  */
 export function __setGenesisStateForTest(state: {
   ready?: boolean;
   address?: string | null;
+  funded?: boolean | null;
 }): void {
   if (state.ready !== undefined) ready = state.ready;
   if (state.address !== undefined) genesisAddress = state.address;
+  if (state.funded !== undefined) fundedOverrideForTest = state.funded;
 }
 
 /**

@@ -1,7 +1,7 @@
 import { JSONBigInt } from "@hathor/wallet-lib/lib/utils/bigint";
 import { getSimpleWalletFromCache } from "./wallet.cache";
 import { generateMultisigWallet } from "./wallet.service";
-import { isGenesisReady, getGenesisAddress } from "./genesis.service";
+import { isGenesisReady, isGenesisFunded, getGenesisAddress } from "./genesis.service";
 import { getPoolStats, type PoolStats } from "./utxo-pool.service";
 import { parseFundBody } from "./parse-fund-body";
 import { fundAddress, getFundingLifecycleState } from "./fund.service";
@@ -108,7 +108,7 @@ export function handleMultisigWallet(req: Request): Response {
 export type ReadyReason =
   | "funding_disabled"
   | "genesis_wallet_not_ready"
-  | "utxo_pool_empty"
+  | "wallet_unfunded"
   | "ready";
 
 export interface ReadinessVerdict {
@@ -117,24 +117,27 @@ export interface ReadinessVerdict {
 }
 
 /**
- * Pure readiness logic, derived from config + genesis + pool state. Order
- * matters: the funding kill switch wins over everything (a disabled service
- * is intentionally healthy), then genesis liveness, then pool availability.
+ * Pure readiness logic, derived from config + genesis liveness + whether the
+ * genesis wallet holds funds. Order matters: the funding kill switch wins over
+ * everything (a disabled service is intentionally healthy), then genesis
+ * liveness, then whether there is anything to fund with.
  *
- *  - funding off                        → ready    (wallet-generation-only mode)
- *  - genesis not yet synced             → not ready (genesis_wallet_not_ready)
- *  - genesis ready, test pool empty     → not ready (utxo_pool_empty)
- *  - genesis ready, test pool has funds → ready
+ *  - funding off                          → ready    (wallet-generation-only mode)
+ *  - genesis not yet synced               → not ready (genesis_wallet_not_ready)
+ *  - genesis ready, wallet has no funds   → not ready (wallet_unfunded)
+ *  - genesis ready, wallet has funds      → ready
  *
- * Readiness gates on the *test* pool: it is the high-throughput path, and it is
- * empty until the first split runs. Large funding is wallet-sourced and rides
- * on genesis-wallet readiness, so it needs no separate term here. Kept pure (no
- * module reads) so it can be unit-tested by passing inputs directly.
+ * Readiness is decoupled from the test pool and gates on the *wallet* — the
+ * source of truth. As long as the wallet holds spendable UTXOs the service can
+ * fund clients (small requests from the pool, large requests wallet-sourced),
+ * even when the test pool is momentarily empty between splits. Kept pure (no
+ * module reads or I/O) so it can be unit-tested by passing inputs directly;
+ * the caller performs the wallet query and passes the boolean.
  */
 export function computeReadiness(
   fundingEnabled: boolean,
   genesisReady: boolean,
-  stats: PoolStats,
+  walletFunded: boolean,
 ): ReadinessVerdict {
   if (!fundingEnabled) {
     return { ready: true, readyReason: "funding_disabled" };
@@ -142,16 +145,25 @@ export function computeReadiness(
   if (!genesisReady) {
     return { ready: false, readyReason: "genesis_wallet_not_ready" };
   }
-  if (stats.testUtxos === 0) {
-    return { ready: false, readyReason: "utxo_pool_empty" };
+  if (!walletFunded) {
+    return { ready: false, readyReason: "wallet_unfunded" };
   }
   return { ready: true, readyReason: "ready" };
 }
 
-/** Gather live state and apply {@link computeReadiness}. */
-function currentReadiness(): ReadinessVerdict & { stats: PoolStats } {
+/**
+ * Gather live state and apply {@link computeReadiness}. The wallet-funds query
+ * (a single `getUtxos` call) runs only when its answer can change the verdict —
+ * i.e. funding is enabled and genesis is ready — so /ready stays cheap when the
+ * service is disabled or still syncing. Pool stats are still gathered for the
+ * /status diagnostic body; they no longer gate readiness.
+ */
+async function currentReadiness(): Promise<ReadinessVerdict & { stats: PoolStats }> {
   const stats = getPoolStats();
-  const verdict = computeReadiness(config.FUNDING_ENABLED, isGenesisReady(), stats);
+  const genesisReady = isGenesisReady();
+  const walletFunded =
+    config.FUNDING_ENABLED && genesisReady ? await isGenesisFunded() : false;
+  const verdict = computeReadiness(config.FUNDING_ENABLED, genesisReady, walletFunded);
   return { ...verdict, stats };
 }
 
@@ -161,8 +173,8 @@ function currentReadiness(): ReadinessVerdict & { stats: PoolStats } {
  * (when known), and the bootstrap phase. Serialized via JSONBigInt so any
  * bigint fields added to the envelope survive stringification.
  */
-export function handleStatus(_req: Request): Response {
-  const readiness = currentReadiness();
+export async function handleStatus(_req: Request): Promise<Response> {
+  const readiness = await currentReadiness();
   return new Response(
     JSONBigInt.stringify({
       ready: readiness.ready,
@@ -177,8 +189,8 @@ export function handleStatus(_req: Request): Response {
 }
 
 /** GET /ready — readiness probe. 200 when ready, 503 otherwise. */
-export function handleReady(_req: Request): Response {
-  const readiness = currentReadiness();
+export async function handleReady(_req: Request): Promise<Response> {
+  const readiness = await currentReadiness();
   return new Response(
     JSONBigInt.stringify({
       ready: readiness.ready,
