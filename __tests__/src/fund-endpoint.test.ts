@@ -56,7 +56,7 @@ function fundRequest(body: unknown): Request {
 }
 
 beforeEach(() => {
-  __setGenesisStateForTest({ ready: true, address: genesisAddress });
+  __setGenesisStateForTest({ ready: true, address: genesisAddress, funded: true });
   __setFundDepsForTest({
     getGenesisWallet: fakeWallet,
     getGenesisAddress: () => genesisAddress,
@@ -80,12 +80,12 @@ afterEach(() => {
     releaseReservation({ txId: txId!, index: Number(indexStr) });
   }
   populateFromUtxos([]);
-  __setGenesisStateForTest({ ready: false, address: null });
+  __setGenesisStateForTest({ ready: false, address: null, funded: null });
 });
 
 describe("GET /status when funding is up", () => {
   test("reports ready with pool stats, genesis address, and funding block", async () => {
-    const res = handleStatus(new Request("http://localhost/status"));
+    const res = await handleStatus(new Request("http://localhost/status"));
     expect(res.status).toBe(200);
 
     const body = JSONBigInt.parse(await res.text());

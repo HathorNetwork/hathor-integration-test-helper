@@ -77,12 +77,13 @@ Error body (all failures): `{ "error": <code>, "message": <text>, "retryable": <
 | ---------------------------- | ------- | ------------------------------------------------ |
 | `funding_disabled`           | `true`  | `FUNDING_ENABLED=false` — wallet-generation-only mode |
 | `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or degraded)  |
-| `utxo_pool_empty`            | `false` | Genesis ready, but no spendable UTXOs yet        |
-| `ready`                      | `true`  | Genesis ready and the pool has funds             |
+| `wallet_unfunded`            | `false` | Genesis ready, but the wallet holds no spendable UTXOs |
+| `ready`                      | `true`  | Genesis ready and the wallet holds funds         |
 
-Once genesis syncs, the UTXO pool is populated from its outputs and an
-initial split produces test-sized UTXOs, so `utxo_pool_empty` clears and
-`/ready` reaches `200 ready`.
+Readiness is decoupled from the test pool: it gates on whether the
+genesis *wallet* holds spendable UTXOs (a single `getUtxos` check), so
+`/ready` reaches `200 ready` as soon as genesis syncs to a funded
+wallet — even before the first split has refilled the test pool.
 
 `/status` additionally reports a `startup.phase` of `idle`,
 `initializing`, `ready`, `disabled`, or `degraded`, plus a `funding`
@@ -121,11 +122,11 @@ test-wallet-helper:
     retries: 10
 ```
 
-> With `FUNDING_ENABLED=true`, `/ready` stays `503` (first
-> `genesis_wallet_not_ready`, then briefly `utxo_pool_empty`) until
-> genesis has synced and the pool has been populated and split, after
-> which it reports `200 ready`. Size the healthcheck `retries` window to
-> allow for genesis sync on your network.
+> With `FUNDING_ENABLED=true`, `/ready` stays `503`
+> (`genesis_wallet_not_ready`, then `wallet_unfunded` only if the wallet
+> has no funds) until genesis has synced to a funded wallet, after which
+> it reports `200 ready`. Size the healthcheck `retries` window to allow
+> for genesis sync on your network.
 
 ## Funding modes
 

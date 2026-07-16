@@ -12,7 +12,7 @@ import { handleStatus, handleReady, handleLive } from "../../src/routes";
  */
 describe("readiness/status/live handlers (real modules)", () => {
   test("GET /ready is 503 genesis_wallet_not_ready before genesis syncs", async () => {
-    const res = handleReady(new Request("http://localhost/ready"));
+    const res = await handleReady(new Request("http://localhost/ready"));
     expect(res.status).toBe(503);
     const body = (await res.json()) as { ready: boolean; readyReason: string };
     expect(body.ready).toBe(false);
@@ -20,7 +20,7 @@ describe("readiness/status/live handlers (real modules)", () => {
   });
 
   test("GET /status is 200 with the full envelope and null genesisAddress", async () => {
-    const res = handleStatus(new Request("http://localhost/status"));
+    const res = await handleStatus(new Request("http://localhost/status"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toHaveProperty("ready", false);
