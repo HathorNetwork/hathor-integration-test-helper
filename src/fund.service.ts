@@ -164,13 +164,13 @@ export function getFundingLifecycleState(): FundingLifecycleState {
  * UTXO set just to find one large output. `amount_bigger_than` is a strict `>`,
  * so it is set to `minAmount - 1` to keep the `>= minAmount` contract.
  *
- * Large funding is wallet-sourced (PR13): the pool keeps no large slot, so the
- * wallet — queried live — is the source of truth for large outputs. Atomicity
- * holds because {@link reserveLarge} marks the chosen output in-flight
- * synchronously, so two concurrent callers that saw the same output from their
- * own wallet queries cannot both win it. Callers pass the minimum amount they
- * need: the requested amount for a large fund, `2 × UTXO_SPLIT_AMOUNT` for a
- * split (an output must yield at least one test UTXO plus change).
+ * The pool holds only test-sized outputs, so the wallet is the source of truth
+ * for large ones and is queried live. Atomicity holds because {@link
+ * reserveLarge} marks the chosen output in-flight synchronously, so two
+ * concurrent callers that saw the same output from their own wallet queries
+ * cannot both win it. Callers pass the minimum amount they need: the requested
+ * amount for a large fund, `2 × UTXO_SPLIT_AMOUNT` for a split (an output must
+ * yield at least one test UTXO plus change).
  */
 export async function reserveLargeFromWallet(
   minAmount: bigint,
@@ -280,10 +280,9 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
     }
     addTestUtxos(newTestUtxos);
 
-    // Large split change is deliberately NOT tracked in the pool: PR13 removed
-    // the large slot, so the change output stays on-chain in the genesis wallet
-    // and is rediscovered by the next live wallet query (reserveLargeFromWallet)
-    // when a further split is needed. Only test-sized outputs are pooled.
+    // The large change output is intentionally not pooled — only test-sized
+    // outputs are. It stays on-chain in the genesis wallet, and the next split
+    // rediscovers it via a live wallet query (reserveLargeFromWallet).
 
     lastSplitAt = new Date().toISOString();
     lastSplitError = null;
@@ -403,9 +402,7 @@ export async function rescanUtxoPool(): Promise<void> {
       },
     });
 
-    // If the rescan left the test bucket empty, try to refill it from a large
-    // wallet output. Large outputs are wallet-sourced (PR13) — not visible in
-    // pool stats — so query the wallet live rather than reading a large slot.
+    // Test bucket empty after the rescan: refill it by splitting a large output.
     if (stats.testUtxos === 0) {
       const reserved = await reserveLargeFromWallet(config.UTXO_SPLIT_AMOUNT * 2n);
       if (reserved !== null) {
@@ -471,8 +468,8 @@ async function attemptFund(
       throw err;
     }
   } else {
-    // Large request: wallet-sourced (PR13). Query the wallet live and reserve
-    // a covering output atomically; the pool holds no large slot to draw from.
+    // Large request: the pool serves only test-sized amounts, so source it
+    // from the wallet.
     const large = await reserveLargeFromWallet(amount);
     if (large === null) {
       throw new PoolExhaustedError("No large UTXO available for this amount");
@@ -564,10 +561,8 @@ function triggerBackgroundRefill(): void {
   backgroundRefillTimer = setTimeout(() => {
     backgroundRefillTimer = null;
 
-    // Source the split input from a large wallet output (PR13): the pool no
-    // longer tracks a large slot. Require at least 2 × UTXO_SPLIT_AMOUNT so the
-    // split yields at least one test UTXO plus change; skip quietly if the
-    // wallet currently has nothing that large.
+    // Require at least 2 × UTXO_SPLIT_AMOUNT so the split yields at least one
+    // test UTXO plus change; skip quietly when the wallet has nothing that large.
     reserveLargeFromWallet(config.UTXO_SPLIT_AMOUNT * 2n)
       .then((reserved) => {
         if (reserved === null) {

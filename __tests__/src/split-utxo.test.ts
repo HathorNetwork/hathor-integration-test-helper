@@ -93,9 +93,8 @@ describe("splitUtxo", () => {
 
     const stats = getPoolStats();
     expect(stats.testUtxos).toBe(10);
-    // The large change output (90000) is NOT pooled: PR13 removed the large
-    // slot, so change stays on-chain in the genesis wallet and is rediscovered
-    // by a later live wallet query. Only the 10 test-sized outputs are pooled.
+    // The large change output (90000) is not pooled — only the 10 test-sized
+    // outputs are; the change stays on-chain and a later wallet query finds it.
   });
 
   test("drops the input as dust when too small to split", async () => {

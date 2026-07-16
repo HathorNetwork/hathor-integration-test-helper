@@ -130,13 +130,10 @@ let fundedOverrideForTest: boolean | null = null;
 
 /**
  * Whether the genesis wallet currently holds any spendable native-token UTXOs.
+ * Backs the readiness verdict (see {@link computeReadiness}).
  *
- * Readiness is based on the wallet — the source of truth — not the test pool:
- * as long as the wallet has funds, `/fund` can serve clients (small requests
- * from the pool, large requests wallet-sourced) even when the test pool is
- * momentarily empty. A single `getUtxos` call answers it; `getUtxos` reads the
- * wallet's local synced UTXO store, so this is a cheap in-process lookup, not a
- * fullnode round-trip.
+ * A single `getUtxos` call answers it, reading the wallet's local synced UTXO
+ * store — a cheap in-process lookup, not a fullnode round-trip.
  */
 export async function isGenesisFunded(): Promise<boolean> {
   if (fundedOverrideForTest !== null) {

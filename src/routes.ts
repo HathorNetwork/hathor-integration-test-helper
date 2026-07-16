@@ -127,10 +127,10 @@ export interface ReadinessVerdict {
  *  - genesis ready, wallet has no funds   → not ready (wallet_unfunded)
  *  - genesis ready, wallet has funds      → ready
  *
- * Readiness is decoupled from the test pool and gates on the *wallet* — the
- * source of truth. As long as the wallet holds spendable UTXOs the service can
- * fund clients (small requests from the pool, large requests wallet-sourced),
- * even when the test pool is momentarily empty between splits. Kept pure (no
+ * Readiness gates on the *wallet*, not the test pool — the wallet is the
+ * source of truth. As long as it holds spendable UTXOs the service can fund
+ * clients (small requests from the pool, large requests wallet-sourced), even
+ * when the test pool is momentarily empty between splits. Kept pure (no
  * module reads or I/O) so it can be unit-tested by passing inputs directly;
  * the caller performs the wallet query and passes the boolean.
  */
@@ -155,8 +155,8 @@ export function computeReadiness(
  * Gather live state and apply {@link computeReadiness}. The wallet-funds query
  * (a single `getUtxos` call) runs only when its answer can change the verdict —
  * i.e. funding is enabled and genesis is ready — so /ready stays cheap when the
- * service is disabled or still syncing. Pool stats are still gathered for the
- * /status diagnostic body; they no longer gate readiness.
+ * service is disabled or still syncing. Pool stats are gathered only for the
+ * /status diagnostic body, not for the readiness verdict.
  */
 async function currentReadiness(): Promise<ReadinessVerdict & { stats: PoolStats }> {
   const stats = getPoolStats();

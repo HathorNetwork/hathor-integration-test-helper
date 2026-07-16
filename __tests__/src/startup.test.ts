@@ -108,9 +108,9 @@ describe("bootstrapFunding pool population", () => {
   });
 
   test("delegates the initial split when the pool has no test UTXOs", async () => {
-    // With PR13's wallet-sourced pool, stats expose only `testUtxos`; whether a
-    // large output exists to split is discovered inside runInitialSplit (via a
-    // live wallet query), so the bootstrap delegates whenever testUtxos === 0.
+    // Pool stats expose only `testUtxos`; whether a large output exists to
+    // split is discovered inside runInitialSplit (via a live wallet query), so
+    // the bootstrap delegates whenever testUtxos === 0.
     await bootstrapFunding(
       deps({
         getPoolStats: () => ({ testUtxos: 0 }),

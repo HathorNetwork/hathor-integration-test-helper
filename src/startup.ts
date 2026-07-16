@@ -69,12 +69,9 @@ async function refreshPoolFromWallet(): Promise<void> {
 
 /**
  * Attempt the first UTXO split up to `maxAttempts` times with linear backoff,
- * refreshing the pool between attempts. Production implementation of
+ * refreshing the pool between attempts. The output to split is sourced from the
+ * wallet via {@link reserveLargeFromWallet}. Production implementation of
  * {@link BootstrapDeps.runInitialSplit}.
- *
- * Large funding is wallet-sourced (PR13): the pool holds no large slot, so the
- * output to split is found by querying the wallet live and reserved through
- * {@link reserveLargeFromWallet} — not read from pool stats.
  */
 async function runInitialSplitWithRetry(maxAttempts: number): Promise<void> {
   let lastError: string | null = null;
@@ -82,9 +79,9 @@ async function runInitialSplitWithRetry(maxAttempts: number): Promise<void> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const reserved = await reserveLargeFromWallet(config.UTXO_SPLIT_AMOUNT);
     if (reserved === null) {
-      // Nothing large to split. An entirely-empty pool is a valid ready
-      // state — readiness reports it as pool-empty and a later fund/rescan
-      // can populate it — so this is a clean skip, not a startup failure.
+      // Nothing large to split — not a startup failure: the bootstrap stays
+      // ready and a later fund/rescan can still populate the pool, so return
+      // cleanly rather than degrading.
       logger.info({ event: "startup.initial_split_skipped_no_large" });
       return;
     }
