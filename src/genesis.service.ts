@@ -22,6 +22,11 @@ import { logger } from "./logger";
 let wallet: InstanceType<typeof HathorWallet> | null = null;
 let genesisAddress: string | null = null;
 let ready = false;
+// In-flight init: concurrent callers await this shared promise instead of each
+// building a second wallet. Cleared once init settles so a failed attempt can
+// be retried — on failure the singleton is left null (see below), never a
+// half-built wallet a `wallet !== null` guard would wrongly treat as ready.
+let initPromise: Promise<void> | null = null;
 
 const SYNC_CHECK_INTERVAL_MS = 500;
 
@@ -32,69 +37,96 @@ const SYNC_CHECK_INTERVAL_MS = 500;
  * Throws if the wallet cannot start (bad seed, unreachable fullnode). The
  * caller (`bootstrapFunding`) catches that and transitions to `degraded`,
  * keeping the service alive for wallet-generation endpoints.
+ *
+ * Concurrency-safe: the genesis wallet is a process singleton, so a completed
+ * init is a no-op and an in-flight one is shared. Production only ever calls
+ * this once (behind `bootstrapFunding`'s boot promise); the in-flight guard
+ * keeps the primitive correct on its own rather than relying on that caller.
  */
 export async function initGenesisWallet(): Promise<void> {
-  // Idempotent: the genesis wallet is a process singleton. A second call is a
-  // caller bug — building another wallet would open a duplicate connection and
-  // orphan the first — so no-op with a warning.
+  // Already initialized: repeat call is a caller bug — building another wallet
+  // would open a duplicate connection and orphan the first — so no-op.
   if (wallet !== null) {
     logger.warn({ event: "genesis.init_skipped_already_initialized" });
     return;
   }
-
-  logger.info({ event: "genesis.starting" });
-
-  walletLibConfig.setTxMiningUrl(config.TX_MINING_URL);
-  logger.info({
-    event: "genesis.tx_mining_url",
-    meta: { txMiningUrl: config.TX_MINING_URL },
-  });
-
-  // On private testnets with --test-mode-tx-weight the fullnode accepts
-  // weight=1, but wallet-lib hardcodes txMinWeight=14 / coefficient=1.6 / k=100,
-  // producing high weights the dev-miner can't solve quickly. Override all
-  // three plus calculateWeight to pin the minimum, matching wallet-lib's own
-  // integration-test setup.
-  if (config.TX_MIN_WEIGHT) {
-    // Local const narrows the optional config field to `number` for the closure.
-    const txMinWeight = config.TX_MIN_WEIGHT;
-    TX_WEIGHT_CONSTANTS.txMinWeight = txMinWeight;
-    TX_WEIGHT_CONSTANTS.txWeightCoefficient = 0;
-    TX_WEIGHT_CONSTANTS.txMinWeightK = 0;
-    Transaction.prototype.calculateWeight = function (): number {
-      return txMinWeight;
-    };
-    logger.info({ event: "genesis.tx_weight_overridden", meta: { txMinWeight } });
+  // An init is already running: share it instead of starting a second wallet.
+  if (initPromise !== null) {
+    return initPromise;
   }
 
-  const connection = new WalletConnection({
-    network: config.NETWORK,
-    servers: [config.HATHOR_NODE_URL],
-  } as ConstructorParameters<typeof WalletConnection>[0]);
+  initPromise = (async () => {
+    logger.info({ event: "genesis.starting" });
 
-  wallet = new HathorWallet({
-    seed: config.GENESIS_SEED_WORDS,
-    connection,
-    password: config.WALLET_PASSWORD,
-    pinCode: config.WALLET_PIN_CODE,
-  });
+    walletLibConfig.setTxMiningUrl(config.TX_MINING_URL);
+    logger.info({
+      event: "genesis.tx_mining_url",
+      meta: { txMiningUrl: config.TX_MINING_URL },
+    });
 
-  await wallet.start();
-  logger.info({ event: "genesis.wallet_started_waiting_sync" });
+    // On private testnets with --test-mode-tx-weight the fullnode accepts
+    // weight=1, but wallet-lib hardcodes txMinWeight=14 / coefficient=1.6 /
+    // k=100, producing high weights the dev-miner can't solve quickly. Override
+    // all three plus calculateWeight to pin the minimum, matching wallet-lib's
+    // own integration-test setup.
+    if (config.TX_MIN_WEIGHT) {
+      // Local const narrows the optional config field to `number` for the closure.
+      const txMinWeight = config.TX_MIN_WEIGHT;
+      TX_WEIGHT_CONSTANTS.txMinWeight = txMinWeight;
+      TX_WEIGHT_CONSTANTS.txWeightCoefficient = 0;
+      TX_WEIGHT_CONSTANTS.txMinWeightK = 0;
+      Transaction.prototype.calculateWeight = function (): number {
+        return txMinWeight;
+      };
+      logger.info({ event: "genesis.tx_weight_overridden", meta: { txMinWeight } });
+    }
 
-  // Bounded wait: `wallet.start()` can resolve while the wallet never reaches
-  // `isReady()` (stalled sync, wrong network). Without a deadline the bootstrap
-  // would hang at `initializing` forever; on timeout we reject so the caller
-  // transitions to `degraded`.
-  await waitUntilReady(
-    () => wallet?.isReady() ?? false,
-    config.GENESIS_SYNC_TIMEOUT_MS,
-    SYNC_CHECK_INTERVAL_MS,
-  );
+    const connection = new WalletConnection({
+      network: config.NETWORK,
+      servers: [config.HATHOR_NODE_URL],
+    } as ConstructorParameters<typeof WalletConnection>[0]);
 
-  genesisAddress = await wallet.getAddressAtIndex(0);
-  ready = true;
-  logger.info({ event: "genesis.ready", meta: { genesisAddress } });
+    // Build into a local, publishing `wallet` only after a clean start+sync
+    // below. A throw before then leaves the singleton null, so the rollback in
+    // the catch has nothing half-built to expose and a retry starts fresh.
+    const w = new HathorWallet({
+      seed: config.GENESIS_SEED_WORDS,
+      connection,
+      password: config.WALLET_PASSWORD,
+      pinCode: config.WALLET_PIN_CODE,
+    });
+
+    await w.start();
+    logger.info({ event: "genesis.wallet_started_waiting_sync" });
+
+    // Bounded wait: `w.start()` can resolve while the wallet never reaches
+    // `isReady()` (stalled sync, wrong network). Without a deadline the
+    // bootstrap would hang at `initializing` forever; on timeout we reject so
+    // the caller transitions to `degraded`.
+    await waitUntilReady(
+      () => w.isReady(),
+      config.GENESIS_SYNC_TIMEOUT_MS,
+      SYNC_CHECK_INTERVAL_MS,
+    );
+
+    genesisAddress = await w.getAddressAtIndex(0);
+    wallet = w;
+    ready = true;
+    logger.info({ event: "genesis.ready", meta: { genesisAddress } });
+  })();
+
+  try {
+    await initPromise;
+  } catch (err) {
+    // Roll back any partial state so a retry sees a clean "not initialized"
+    // rather than a wallet stuck mid-start.
+    wallet = null;
+    genesisAddress = null;
+    ready = false;
+    throw err;
+  } finally {
+    initPromise = null;
+  }
 }
 
 /**
@@ -134,8 +166,8 @@ export function isGenesisReady(): boolean {
 
 /**
  * Test-only override for {@link isGenesisFunded}. `null` means "no override —
- * query the real wallet". Set through {@link __setGenesisStateForTest} so
- * route/handler tests can exercise funded/unfunded readiness without a wallet.
+ * query the real wallet". Set through {@link __setGenesisStateForTest} so the
+ * funded verdict is testable without a real wallet.
  */
 let fundedOverrideForTest: boolean | null = null;
 
@@ -154,9 +186,13 @@ export interface FundQueryWallet {
  * UTXO? Split out from {@link isGenesisFunded} so the `> 0n` boundary is
  * unit-testable against a fake wallet, without the real genesis singleton.
  *
- * `total_utxos_available` excludes height-locked reward UTXOs (wallet-lib
- * buckets those separately as locked), so a genesis wallet whose only UTXO is a
- * still-locked block reward correctly reads as unfunded until it unlocks.
+ * `total_utxos_available` counts only UTXOs wallet-lib's `getUtxos` classifies
+ * as unlocked: it runs each UTXO through `Transaction.isHeightLocked` and buckets
+ * height-locked rewards into `total_utxos_locked` instead. That split is
+ * independent of the `only_available_utxos` option (which only filters the
+ * returned `utxos[]` list), so a genesis wallet whose sole UTXO is a still-locked
+ * block reward correctly reads as unfunded here until it unlocks — no extra
+ * filtering flag needed.
  */
 export async function walletHoldsSpendableFunds(
   wallet: FundQueryWallet,
@@ -180,21 +216,15 @@ export async function isGenesisFunded(): Promise<boolean> {
 }
 
 /**
- * Test-only: force the genesis readiness flag, address, and funded verdict
- * without a fullnode, so route/handler tests can exercise the ready path via
- * dependency injection (not `mock.module`, which leaks process-globally across
- * Bun test files). Each field is independent: passing `undefined` (or omitting
- * it) leaves that piece of state untouched; `funded: null` clears the funded
- * override so the real wallet query runs again. Use {@link
- * __resetGenesisStateForTest} between tests to clear everything at once.
+ * Test-only: override the funded verdict without a fullnode, so the funded
+ * unit test can pin it. Deliberately narrow — it cannot set `ready` or
+ * `genesisAddress`: the readiness verdict is driven through injected inputs
+ * ({@link ReadinessInputs} in routes.ts), so no test forces the `ready` global
+ * true. That is what keeps Bun's process-shared module state from leaking a
+ * spurious readiness across test files. Pass `funded: null` to drop the
+ * override; use {@link __resetGenesisStateForTest} to clear everything.
  */
-export function __setGenesisStateForTest(state: {
-  ready?: boolean;
-  address?: string | null;
-  funded?: boolean | null;
-}): void {
-  if (state.ready !== undefined) ready = state.ready;
-  if (state.address !== undefined) genesisAddress = state.address;
+export function __setGenesisStateForTest(state: { funded?: boolean | null }): void {
   if (state.funded !== undefined) fundedOverrideForTest = state.funded;
 }
 
@@ -210,12 +240,14 @@ export function __setGenesisWalletForTest(w: unknown): void {
 }
 
 /**
- * Test-only: reset all genesis module state (wallet, ready flag, address, and
- * funded override) to its pre-init defaults, so a test that mutated it cannot
- * pollute later files — Bun shares module globals across the process.
+ * Test-only: reset all genesis module state (wallet, in-flight init, ready
+ * flag, address, and funded override) to its pre-init defaults, so a test that
+ * mutated it cannot pollute later files — Bun shares module globals across the
+ * process.
  */
 export function __resetGenesisStateForTest(): void {
   wallet = null;
+  initPromise = null;
   ready = false;
   genesisAddress = null;
   fundedOverrideForTest = null;

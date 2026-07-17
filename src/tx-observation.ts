@@ -31,7 +31,7 @@ export interface TxObservationWallet {
  *
  * Returns `true` if the tx was observed, `false` on timeout. Never rejects.
  */
-export async function awaitTxObserved(
+export function awaitTxObserved(
   wallet: TxObservationWallet,
   txId: string,
   timeoutMs: number,

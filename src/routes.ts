@@ -150,6 +150,19 @@ export function computeReadiness(
 }
 
 /**
+ * Live inputs to the readiness verdict. Injected (defaulting to the real
+ * genesis accessors) so handler tests can drive the funds-query-error and
+ * unfunded branches without mutating process-global genesis state — Bun shares
+ * module globals across test files, so a leaked `ready` flag would corrupt an
+ * unrelated file's readiness assertions (see the readiness DI guideline in
+ * CLAUDE.md).
+ */
+export interface ReadinessInputs {
+  genesisReady: boolean;
+  fundsQuery: () => Promise<boolean>;
+}
+
+/**
  * Gather live state and apply {@link computeReadiness}. The wallet-funds query
  * (a single `getUtxos` call) runs only when its answer can change the verdict —
  * i.e. funding is enabled and genesis is ready — so /ready stays cheap when the
@@ -161,13 +174,15 @@ export function computeReadiness(
  * that we could not determine funding (a wallet/storage fault) instead of
  * asserting the wallet is empty.
  */
-async function currentReadiness(): Promise<ReadinessVerdict & { stats: PoolStats }> {
+export async function currentReadiness(
+  inputs: ReadinessInputs = { genesisReady: isGenesisReady(), fundsQuery: isGenesisFunded },
+): Promise<ReadinessVerdict & { stats: PoolStats }> {
   const stats = getPoolStats();
-  const genesisReady = isGenesisReady();
+  const { genesisReady, fundsQuery } = inputs;
   let walletFunded = false;
   if (config.FUNDING_ENABLED && genesisReady) {
     try {
-      walletFunded = await isGenesisFunded();
+      walletFunded = await fundsQuery();
     } catch (err) {
       // A wallet/storage failure on the funds query must not turn a readiness
       // probe into a 500 — that breaks orchestrator health checks. Report a

@@ -1,9 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { handleStatus, handleReady, handleLive } from "../../src/routes";
-import {
-  __setGenesisStateForTest,
-  __resetGenesisStateForTest,
-} from "../../src/genesis.service";
+import { handleStatus, handleReady, handleLive, currentReadiness } from "../../src/routes";
 
 /**
  * Wiring tests for the readiness/status/live handlers against the REAL
@@ -35,20 +31,21 @@ describe("readiness/status/live handlers (real modules)", () => {
     expect(typeof startup.phase).toBe("string");
   });
 
-  test("GET /ready is 503 funds_query_error (not 500) when the funds query throws", async () => {
-    // ready=true but no wallet initialized: isGenesisFunded falls through to
-    // getGenesisWallet(), which throws. currentReadiness must swallow that and
-    // report the distinct funds_query_error (503) — never a 500 into the health
-    // probe, and not the misleading wallet_unfunded.
-    __setGenesisStateForTest({ ready: true, funded: null });
-    try {
-      const res = await handleReady(new Request("http://localhost/ready"));
-      expect(res.status).toBe(503);
-      const body = (await res.json()) as { readyReason: string };
-      expect(body.readyReason).toBe("funds_query_error");
-    } finally {
-      __resetGenesisStateForTest();
-    }
+  test("readiness reports funds_query_error (not a throw) when the funds query fails", async () => {
+    // With genesis ready but the funds query throwing (a wallet/storage fault),
+    // currentReadiness must swallow the error and report the distinct
+    // funds_query_error verdict — never bubble it into a 500 health probe, and
+    // not the misleading wallet_unfunded. Injected here rather than mutated onto
+    // the genesis singleton: a leaked global `ready` would poison the /status
+    // test above under a different Bun file order.
+    const verdict = await currentReadiness({
+      genesisReady: true,
+      fundsQuery: async () => {
+        throw new Error("wallet storage unavailable");
+      },
+    });
+    expect(verdict.ready).toBe(false);
+    expect(verdict.readyReason).toBe("funds_query_error");
   });
 
   test("GET /live is always 200 live:true", async () => {
