@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import {
   populateFromUtxos,
   reserveUtxo,
@@ -14,13 +14,21 @@ import { config } from "../../src/config";
 // bucket but deliberately preserves reservedSet across calls (it is the source
 // of truth for in-flight UTXOs), so a fresh reservedSet needs an explicit
 // release of anything a prior test left reserved.
-beforeEach(() => {
+function resetPool() {
   for (const key of getReservedKeys()) {
     const [txId, indexStr] = key.split(":");
     releaseReservation({ txId: txId!, index: Number(indexStr) });
   }
   populateFromUtxos([]);
-});
+}
+
+beforeEach(resetPool);
+
+// The pool (test bucket and reservedSet) is a process-global Bun shares across
+// test files. beforeEach cleans up only before each test, so this file's final
+// reservations/UTXOs would leak into later files' pool reads. Reset after the
+// file too.
+afterAll(resetPool);
 
 describe("reservedSet invariants", () => {
   // These tests seed test-sized 1000n UTXOs and reserve 500n small amounts.

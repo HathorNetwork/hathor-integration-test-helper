@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import {
   populateFromUtxos,
   reserveUtxo,
@@ -28,6 +28,15 @@ function resetPool() {
 
 describe("utxo-pool.service", () => {
   beforeEach(() => {
+    resetPool();
+  });
+
+  // The pool is a process-global singleton and Bun shares module state across
+  // test files. beforeEach only cleans up *before* each test, so the last
+  // test's residue (this file's final test deliberately leaves testUtxos=1)
+  // would otherwise leak into any later file that reads pool stats — e.g. the
+  // /status envelope test asserting testUtxos===0. Reset after the file too.
+  afterAll(() => {
     resetPool();
   });
 
