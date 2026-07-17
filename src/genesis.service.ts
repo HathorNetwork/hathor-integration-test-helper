@@ -87,8 +87,7 @@ export async function initGenesisWallet(): Promise<void> {
     } as ConstructorParameters<typeof WalletConnection>[0]);
 
     // Build into a local, publishing `wallet` only after a clean start+sync
-    // below. A throw before then leaves the singleton null, so the rollback in
-    // the catch has nothing half-built to expose and a retry starts fresh.
+    // below, so a throw leaves the singleton null and a retry starts fresh.
     const w = new HathorWallet({
       seed: config.GENESIS_SEED_WORDS,
       connection,
@@ -96,34 +95,47 @@ export async function initGenesisWallet(): Promise<void> {
       pinCode: config.WALLET_PIN_CODE,
     });
 
-    await w.start();
-    logger.info({ event: "genesis.wallet_started_waiting_sync" });
+    try {
+      await w.start();
+      logger.info({ event: "genesis.wallet_started_waiting_sync" });
 
-    // Bounded wait: `w.start()` can resolve while the wallet never reaches
-    // `isReady()` (stalled sync, wrong network). Without a deadline the
-    // bootstrap would hang at `initializing` forever; on timeout we reject so
-    // the caller transitions to `degraded`.
-    await waitUntilReady(
-      () => w.isReady(),
-      config.GENESIS_SYNC_TIMEOUT_MS,
-      SYNC_CHECK_INTERVAL_MS,
-    );
+      // Bounded wait: `w.start()` can resolve while the wallet never reaches
+      // `isReady()` (stalled sync, wrong network). Without a deadline the
+      // bootstrap would hang at `initializing` forever; on timeout we reject so
+      // the caller transitions to `degraded`.
+      await waitUntilReady(
+        () => w.isReady(),
+        config.GENESIS_SYNC_TIMEOUT_MS,
+        SYNC_CHECK_INTERVAL_MS,
+      );
 
-    genesisAddress = await w.getAddressAtIndex(0);
-    wallet = w;
-    ready = true;
-    logger.info({ event: "genesis.ready", meta: { genesisAddress } });
+      genesisAddress = await w.getAddressAtIndex(0);
+      wallet = w;
+      ready = true;
+      logger.info({ event: "genesis.ready", meta: { genesisAddress } });
+    } catch (err) {
+      // Roll back partial state and stop the half-started wallet. `w.start()`
+      // opens a fullnode connection and background listeners; a later sync
+      // timeout would otherwise strand them, and because init is retryable,
+      // each retry would stack another running wallet. Stop is best-effort —
+      // it can throw if start never completed, so swallow and log.
+      wallet = null;
+      genesisAddress = null;
+      ready = false;
+      try {
+        await w.stop();
+      } catch (stopErr) {
+        logger.warn({
+          event: "genesis.init_cleanup_failed",
+          meta: { error: stopErr instanceof Error ? stopErr.message : String(stopErr) },
+        });
+      }
+      throw err;
+    }
   })();
 
   try {
     await initPromise;
-  } catch (err) {
-    // Roll back any partial state so a retry sees a clean "not initialized"
-    // rather than a wallet stuck mid-start.
-    wallet = null;
-    genesisAddress = null;
-    ready = false;
-    throw err;
   } finally {
     initPromise = null;
   }
