@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { handleStatus, handleReady, handleLive } from "../../src/routes";
+import { __setGenesisStateForTest } from "../../src/genesis.service";
 
 /**
  * Wiring tests for the readiness/status/live handlers against the REAL
@@ -12,7 +13,7 @@ import { handleStatus, handleReady, handleLive } from "../../src/routes";
  */
 describe("readiness/status/live handlers (real modules)", () => {
   test("GET /ready is 503 genesis_wallet_not_ready before genesis syncs", async () => {
-    const res = handleReady(new Request("http://localhost/ready"));
+    const res = await handleReady(new Request("http://localhost/ready"));
     expect(res.status).toBe(503);
     const body = (await res.json()) as { ready: boolean; readyReason: string };
     expect(body.ready).toBe(false);
@@ -20,7 +21,7 @@ describe("readiness/status/live handlers (real modules)", () => {
   });
 
   test("GET /status is 200 with the full envelope and null genesisAddress", async () => {
-    const res = handleStatus(new Request("http://localhost/status"));
+    const res = await handleStatus(new Request("http://localhost/status"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toHaveProperty("ready", false);
@@ -29,6 +30,21 @@ describe("readiness/status/live handlers (real modules)", () => {
     expect(body.genesisAddress).toBeNull();
     const startup = body.startup as { phase: string };
     expect(typeof startup.phase).toBe("string");
+  });
+
+  test("GET /ready is 503 (not 500) when the funds query throws", async () => {
+    // ready=true but no wallet initialized: isGenesisFunded falls through to
+    // getGenesisWallet(), which throws. currentReadiness must swallow that and
+    // report wallet_unfunded (503), never bubble a 500 into the health probe.
+    __setGenesisStateForTest({ ready: true, address: null, funded: null });
+    try {
+      const res = await handleReady(new Request("http://localhost/ready"));
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { readyReason: string };
+      expect(body.readyReason).toBe("wallet_unfunded");
+    } finally {
+      __setGenesisStateForTest({ ready: false, address: null, funded: null });
+    }
   });
 
   test("GET /live is always 200 live:true", async () => {
