@@ -106,6 +106,7 @@ export type ReadyReason =
   | "funding_disabled"
   | "genesis_wallet_not_ready"
   | "wallet_unfunded"
+  | "funds_query_error"
   | "ready";
 
 export interface ReadinessVerdict {
@@ -154,6 +155,11 @@ export function computeReadiness(
  * i.e. funding is enabled and genesis is ready — so /ready stays cheap when the
  * service is disabled or still syncing. Pool stats are gathered only for the
  * /status diagnostic body, not for the readiness verdict.
+ *
+ * If the funds query itself throws, we report the distinct `funds_query_error`
+ * reason rather than `wallet_unfunded`: both are 503, but the former is honest
+ * that we could not determine funding (a wallet/storage fault) instead of
+ * asserting the wallet is empty.
  */
 async function currentReadiness(): Promise<ReadinessVerdict & { stats: PoolStats }> {
   const stats = getPoolStats();
@@ -163,14 +169,17 @@ async function currentReadiness(): Promise<ReadinessVerdict & { stats: PoolStats
     try {
       walletFunded = await isGenesisFunded();
     } catch (err) {
-      // A wallet/storage hiccup on the funds query must not turn a readiness
-      // probe into a 500 — that breaks orchestrator health checks. Treat it as
-      // "not funded": the probe reports 503 wallet_unfunded and self-corrects on
-      // the next poll once the wallet answers again.
-      logger.warn({
+      // A wallet/storage failure on the funds query must not turn a readiness
+      // probe into a 500 — that breaks orchestrator health checks. Report a
+      // distinct 503 reason so operators see "couldn't determine funding", not
+      // a false "wallet is empty"; the probe self-corrects on the next poll.
+      // Logged at error: a persistent inability to read the UTXO store is a
+      // production fault, not a routine warning.
+      logger.error({
         event: "readiness.funds_query_failed",
         meta: { error: err instanceof Error ? err.message : String(err) },
       });
+      return { ready: false, readyReason: "funds_query_error", stats };
     }
   }
   const verdict = computeReadiness(config.FUNDING_ENABLED, genesisReady, walletFunded);

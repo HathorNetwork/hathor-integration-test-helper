@@ -19,7 +19,7 @@ import { logger } from "./logger";
  * importing the full wallet class.
  */
 export interface TxObservationWallet {
-  getTx(id: string): Promise<unknown | null>;
+  getTx(id: string): Promise<unknown>;
   on(event: "new-tx", listener: (tx: { tx_id: string } | undefined) => void): unknown;
   off(event: "new-tx", listener: (tx: { tx_id: string } | undefined) => void): unknown;
 }
@@ -38,10 +38,11 @@ export async function awaitTxObserved(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
-    // `let` (not `const`) and assigned before `wallet.on` below: a wallet that
-    // invokes the listener synchronously during `on()` would call `finish()` —
-    // and reference `timer` — before it exists; a `const` in its temporal dead
-    // zone would throw a ReferenceError.
+    // `let` because `timer` is forward-declared here but only assigned once the
+    // timeout is armed below — after `finish`/`handler` are defined. Those
+    // closures capture the binding (`finish` reads it via `clearTimeout(timer)`),
+    // and a `const` can't be declared now and assigned later. Assignment happens
+    // before `wallet.on`, so any synchronous listener already sees a live timer.
     let timer: ReturnType<typeof setTimeout>;
 
     const finish = (observed: boolean) => {

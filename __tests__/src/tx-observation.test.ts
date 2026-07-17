@@ -30,11 +30,16 @@ describe("awaitTxObserved", () => {
     setImmediate(() => wallet.emit("new-tx", { tx_id: "tx-2" }));
 
     expect(await promise).toBe(true);
+    // The listener must be torn down on resolve — otherwise every call leaks a
+    // 'new-tx' handler on the long-lived genesis wallet.
+    expect(wallet.listenerCount("new-tx")).toBe(0);
   });
 
   test("returns false when timeout elapses without observation", async () => {
     const wallet = makeMockWallet();
     expect(await awaitTxObserved(wallet, "tx-3", 50)).toBe(false);
+    // Same cleanup guarantee on the timeout path.
+    expect(wallet.listenerCount("new-tx")).toBe(0);
   });
 
   test("does not resolve on a 'new-tx' event for a different txId", async () => {
