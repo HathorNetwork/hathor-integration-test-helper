@@ -7,13 +7,16 @@ import { config } from "./config";
 import { logger } from "./logger";
 
 /**
- * Genesis wallet lifecycle. The genesis wallet holds the funded UTXOs the
- * service spends from; it is initialized at startup (only when funding is
- * enabled) and connects to the configured fullnode.
+ * Genesis wallet lifecycle plus the low-level primitives the funding flow
+ * builds on. The genesis wallet holds the funded UTXOs the service spends
+ * from; it is initialized at startup (only when funding is enabled) and
+ * connects to the configured fullnode.
  *
- * UTXO-pool population and the on-chain split are deliberately NOT here.
- * This module owns just the wallet's connect-and-sync lifecycle plus the
- * accessors the routes read.
+ * This module owns the wallet's connect-and-sync lifecycle, the accessors the
+ * routes read, the funded verdict ({@link isGenesisFunded}), and the reward-
+ * lock wait ({@link waitForRewardUnlock}) that gates spending a height-locked
+ * reward UTXO. UTXO-pool population and the on-chain split transaction itself
+ * live in the fund/pool modules, not here.
  */
 
 let wallet: InstanceType<typeof HathorWallet> | null = null;
@@ -137,6 +140,32 @@ export function isGenesisReady(): boolean {
 let fundedOverrideForTest: boolean | null = null;
 
 /**
+ * Minimal wallet surface for the funded check — just the `getUtxos` call
+ * {@link walletHoldsSpendableFunds} needs. Declared structurally (a subset of
+ * wallet-lib's `HathorWallet`) so the verdict is unit-testable with a plain
+ * fake, mirroring the {@link RewardLockStorage} seam.
+ */
+export interface FundQueryWallet {
+  getUtxos(options: { token: string }): Promise<{ total_utxos_available: bigint }>;
+}
+
+/**
+ * Pure funded verdict: does `wallet` hold at least one spendable native-token
+ * UTXO? Split out from {@link isGenesisFunded} so the `> 0n` boundary is
+ * unit-testable against a fake wallet, without the real genesis singleton.
+ *
+ * `total_utxos_available` excludes height-locked reward UTXOs (wallet-lib
+ * buckets those separately as locked), so a genesis wallet whose only UTXO is a
+ * still-locked block reward correctly reads as unfunded until it unlocks.
+ */
+export async function walletHoldsSpendableFunds(
+  wallet: FundQueryWallet,
+): Promise<boolean> {
+  const details = await wallet.getUtxos({ token: NATIVE_TOKEN_UID });
+  return details.total_utxos_available > 0n;
+}
+
+/**
  * Whether the genesis wallet currently holds any spendable native-token UTXOs.
  * Backs the readiness verdict (see {@link computeReadiness}).
  *
@@ -147,15 +176,17 @@ export async function isGenesisFunded(): Promise<boolean> {
   if (fundedOverrideForTest !== null) {
     return fundedOverrideForTest;
   }
-  const details = await getGenesisWallet().getUtxos({ token: NATIVE_TOKEN_UID });
-  return details.total_utxos_available > 0n;
+  return walletHoldsSpendableFunds(getGenesisWallet());
 }
 
 /**
  * Test-only: force the genesis readiness flag, address, and funded verdict
  * without a fullnode, so route/handler tests can exercise the ready path via
  * dependency injection (not `mock.module`, which leaks process-globally across
- * Bun test files). Pass `funded: null` to drop the override.
+ * Bun test files). Each field is independent: passing `undefined` (or omitting
+ * it) leaves that piece of state untouched; `funded: null` clears the funded
+ * override so the real wallet query runs again. Use {@link
+ * __resetGenesisStateForTest} between tests to clear everything at once.
  */
 export function __setGenesisStateForTest(state: {
   ready?: boolean;
@@ -168,12 +199,38 @@ export function __setGenesisStateForTest(state: {
 }
 
 /**
+ * Test-only: inject the wallet singleton directly so the idempotency guard in
+ * {@link initGenesisWallet} can be exercised without a fullnode (a real init
+ * would connect). Accepts `unknown` because tests pass a lightweight stand-in,
+ * not a full `HathorWallet`. Always pair with {@link __resetGenesisStateForTest}
+ * so the injected wallet does not leak into other test files.
+ */
+export function __setGenesisWalletForTest(w: unknown): void {
+  wallet = w as InstanceType<typeof HathorWallet>;
+}
+
+/**
+ * Test-only: reset all genesis module state (wallet, ready flag, address, and
+ * funded override) to its pre-init defaults, so a test that mutated it cannot
+ * pollute later files — Bun shares module globals across the process.
+ */
+export function __resetGenesisStateForTest(): void {
+  wallet = null;
+  ready = false;
+  genesisAddress = null;
+  fundedOverrideForTest = null;
+}
+
+/**
  * Storage surface used by the reward-lock wait. Declared structurally (a
  * subset of wallet-lib's storage) so the poll loop is unit-testable with a
  * plain fake — no real fullnode, mirroring the {@link waitUntilReady} seam.
  */
 export interface RewardLockStorage {
-  version?: { reward_spend_min_blocks?: number };
+  // `| null` mirrors wallet-lib's `IStorage.version` (unset until the fullnode
+  // API version is fetched), so the real storage satisfies this interface
+  // structurally — no cast needed at the production call site below.
+  version?: { reward_spend_min_blocks?: number } | null;
   getTx(txId: string): Promise<{ height?: number | null } | null>;
   getCurrentHeight(): Promise<number>;
 }
@@ -200,26 +257,43 @@ export async function waitForRewardUnlock(
   const pollIntervalMs = options.pollIntervalMs ?? 1_000;
   const timeoutMs = options.timeoutMs ?? 600_000; // 10 minutes safety net
 
-  const rewardLock = storage.version?.reward_spend_min_blocks ?? 0;
-  if (rewardLock === 0) {
-    // No reward lock configured — nothing to wait for.
+  // Distinguish "field genuinely absent" from an explicit 0. Absent means the
+  // fullnode API version isn't populated yet (storage not synced, or a wallet-
+  // lib shape change) — treating that as "no lock" and proceeding is exactly
+  // how a still-locked reward gets spent, the failure this function prevents.
+  // We still return (tolerant, so a caller isn't hard-blocked) but log it so
+  // the skip is observable rather than silent.
+  const configuredLock = storage.version?.reward_spend_min_blocks;
+  if (configuredLock === undefined || configuredLock === null) {
+    logger.warn({ event: "genesis.reward_lock_version_unavailable", meta: { txId } });
     return;
   }
+  if (configuredLock === 0) {
+    // Chain genuinely configured with no reward lock — nothing to wait for.
+    return;
+  }
+  const rewardLock = configuredLock;
 
   const tx = await storage.getTx(txId);
-  const blockHeight = tx?.height;
+  if (tx == null) {
+    // Tx not in local storage yet (not synced/propagated); can't compute the
+    // lock. Observable skip rather than silent optimism.
+    logger.warn({ event: "genesis.reward_lock_tx_not_found", meta: { txId } });
+    return;
+  }
+  const blockHeight = tx.height;
   if (blockHeight == null) {
-    // Not a block or height unknown — can't compute lock, skip.
+    // Tx present but carries no height — genuinely not a height-locked block,
+    // so there is nothing to wait on.
     logger.warn({ event: "genesis.reward_lock_unknown_block_height", meta: { txId } });
     return;
   }
 
-  // One block beyond wallet-lib's exact unlock height: its
-  // transaction.isHeightLocked frees a reward at
-  // `currentHeight >= blockHeight + reward_spend_min_blocks`, and we
-  // deliberately wait one extra block as a conservative margin so the split is
-  // never attempted on the exact boundary block. Kept pending live validation
-  // on a real fullnode before tightening to the exact height.
+  // wallet-lib frees a reward UTXO at
+  // `currentHeight >= blockHeight + reward_spend_min_blocks`
+  // (transaction.isHeightLocked). We wait one block past that as a deliberate
+  // conservative margin, so the split is never attempted on the exact boundary
+  // block.
   const unlockHeight = blockHeight + rewardLock + 1;
   let currentHeight = await storage.getCurrentHeight();
   if (currentHeight >= unlockHeight) {
@@ -256,5 +330,5 @@ export async function waitForRewardUnlock(
  */
 export async function waitForUtxoUnlock(txId: string): Promise<void> {
   const w = getGenesisWallet();
-  await waitForRewardUnlock(w.storage as unknown as RewardLockStorage, txId);
+  await waitForRewardUnlock(w.storage, txId);
 }

@@ -1,6 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { handleStatus, handleReady, handleLive } from "../../src/routes";
-import { __setGenesisStateForTest } from "../../src/genesis.service";
+import {
+  __setGenesisStateForTest,
+  __resetGenesisStateForTest,
+} from "../../src/genesis.service";
 
 /**
  * Wiring tests for the readiness/status/live handlers against the REAL
@@ -32,18 +35,19 @@ describe("readiness/status/live handlers (real modules)", () => {
     expect(typeof startup.phase).toBe("string");
   });
 
-  test("GET /ready is 503 (not 500) when the funds query throws", async () => {
+  test("GET /ready is 503 funds_query_error (not 500) when the funds query throws", async () => {
     // ready=true but no wallet initialized: isGenesisFunded falls through to
     // getGenesisWallet(), which throws. currentReadiness must swallow that and
-    // report wallet_unfunded (503), never bubble a 500 into the health probe.
-    __setGenesisStateForTest({ ready: true, address: null, funded: null });
+    // report the distinct funds_query_error (503) — never a 500 into the health
+    // probe, and not the misleading wallet_unfunded.
+    __setGenesisStateForTest({ ready: true, funded: null });
     try {
       const res = await handleReady(new Request("http://localhost/ready"));
       expect(res.status).toBe(503);
       const body = (await res.json()) as { readyReason: string };
-      expect(body.readyReason).toBe("wallet_unfunded");
+      expect(body.readyReason).toBe("funds_query_error");
     } finally {
-      __setGenesisStateForTest({ ready: false, address: null, funded: null });
+      __resetGenesisStateForTest();
     }
   });
 

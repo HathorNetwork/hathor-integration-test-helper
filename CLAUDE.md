@@ -16,10 +16,12 @@ degraded`) surfaced by `GET /status`. `src/genesis.service.ts` connects
 and syncs the genesis wallet; a bad seed or unreachable fullnode lands in
 `degraded` without taking the HTTP server down. `GET /ready` and
 `/status` share the pure `computeReadiness()` verdict in `src/routes.ts`.
-The UTXO pool (`src/utxo-pool.service.ts`) is a deliberate stub until the
-funding PRs; readiness therefore reports `utxo_pool_empty` once genesis
-is up. Endpoint and readiness-reason tables live in
-[`README.md`](README.md).
+Readiness gates on the genesis *wallet*, not the pool: once genesis is
+up, `currentReadiness()` calls `isGenesisFunded()` (a single `getUtxos`
+query) and reports `wallet_unfunded` until the wallet holds spendable
+UTXOs (a still-height-locked block reward counts as unfunded), or
+`funds_query_error` if that query throws. Endpoint and readiness-reason
+tables live in [`README.md`](README.md).
 
 Test seams (readiness, startup) use dependency injection, not
 `mock.module` — Bun's module mocks are process-global and leak across

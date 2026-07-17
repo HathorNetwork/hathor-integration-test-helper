@@ -52,8 +52,9 @@ OpenAPI document lands with the project-docs PR.
 | ---------------------------- | ------- | ------------------------------------------------ |
 | `funding_disabled`           | `true`  | `FUNDING_ENABLED=false` — wallet-generation-only mode |
 | `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or degraded)  |
-| `utxo_pool_empty`            | `false` | Genesis ready, but no spendable UTXOs yet        |
-| `ready`                      | `true`  | Genesis ready and the pool has funds             |
+| `wallet_unfunded`            | `false` | Genesis ready, but the wallet holds no spendable UTXOs (e.g. a block reward still height-locked) |
+| `funds_query_error`          | `false` | Genesis ready, but the wallet funds query failed — funding state is unknown |
+| `ready`                      | `true`  | Genesis ready and the wallet holds spendable UTXOs |
 
 `/status` additionally reports a `startup.phase` of `idle`,
 `initializing`, `ready`, `disabled`, or `degraded`. A bad seed or an
@@ -90,11 +91,13 @@ test-wallet-helper:
     retries: 10
 ```
 
-> ⚠️ Do **not** gate on `/ready` with `FUNDING_ENABLED=true` yet: the
-> UTXO pool is still a stub, so `/ready` stays `503 utxo_pool_empty` and
-> the container never reports healthy. Once the funding/pool PRs land,
-> `/ready` will reach `200` and become the correct gate for the
-> funding-enabled stack too.
+> ℹ️ With `FUNDING_ENABLED=true`, `/ready` reflects the genesis wallet:
+> it returns `200 ready` once the wallet holds spendable UTXOs and `503
+> wallet_unfunded` until then — including the startup window where the
+> genesis block reward is still height-locked (it becomes spendable as
+> blocks are mined). Gating a funding-enabled stack on `/ready` is
+> correct; just allow enough healthcheck retries to cover that initial
+> reward-lock window.
 
 ## Funding modes
 
