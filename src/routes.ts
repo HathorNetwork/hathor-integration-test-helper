@@ -1,15 +1,16 @@
 import { JSONBigInt } from "@hathor/wallet-lib/lib/utils/bigint";
 import { getSimpleWalletFromCache } from "./wallet.cache";
 import { generateMultisigWallet } from "./wallet.service";
-import { isGenesisReady, getGenesisAddress } from "./genesis.service";
+import { isGenesisReady, isGenesisFunded, getGenesisAddress } from "./genesis.service";
 import { getPoolStats, type PoolStats } from "./utxo-pool.service";
 import { getStartupState } from "./startup";
 import { config } from "./config";
 import { jsonErrorFromService } from "./http";
+import { logger } from "./logger";
 import { InvalidRequestError } from "./errors";
 
 /**
- * Route handlers for PR2. Each handler returns a `Response` — including
+ * Route handlers. Each handler returns a `Response` — including
  * for *expected* error conditions (the `withObservability` wrapper's
  * catch is reserved for truly unexpected throws). Caller-facing errors
  * are surfaced via `jsonErrorFromService` so the `{error, message,
@@ -104,7 +105,8 @@ export function handleMultisigWallet(req: Request): Response {
 export type ReadyReason =
   | "funding_disabled"
   | "genesis_wallet_not_ready"
-  | "utxo_pool_empty"
+  | "wallet_unfunded"
+  | "funds_query_error"
   | "ready";
 
 export interface ReadinessVerdict {
@@ -113,24 +115,27 @@ export interface ReadinessVerdict {
 }
 
 /**
- * Pure readiness logic, derived from config + genesis + pool state. Order
- * matters: the funding kill switch wins over everything (a disabled service
- * is intentionally healthy), then genesis liveness, then pool availability.
+ * Pure readiness logic, derived from config + genesis liveness + whether the
+ * genesis wallet holds funds. Order matters: the funding kill switch wins over
+ * everything (a disabled service is intentionally healthy), then genesis
+ * liveness, then whether there is anything to fund with.
  *
- *  - funding off                        → ready    (wallet-generation-only mode)
- *  - genesis not yet synced             → not ready (genesis_wallet_not_ready)
- *  - genesis ready, test pool empty     → not ready (utxo_pool_empty)
- *  - genesis ready, test pool has funds → ready
+ *  - funding off                          → ready    (wallet-generation-only mode)
+ *  - genesis not yet synced               → not ready (genesis_wallet_not_ready)
+ *  - genesis ready, wallet has no funds   → not ready (wallet_unfunded)
+ *  - genesis ready, wallet has funds      → ready
  *
- * Readiness gates on the *test* pool: it is the high-throughput path, and it is
- * empty until the first split runs. Large funding is wallet-sourced and rides
- * on genesis-wallet readiness, so it needs no separate term here. Kept pure (no
- * module reads) so it can be unit-tested by passing inputs directly.
+ * Readiness gates on the *wallet*, not the test pool — the wallet is the
+ * source of truth. As long as it holds spendable UTXOs the service can fund
+ * clients (small requests from the pool, large requests wallet-sourced), even
+ * when the test pool is momentarily empty between splits. Kept pure (no
+ * module reads or I/O) so it can be unit-tested by passing inputs directly;
+ * the caller performs the wallet query and passes the boolean.
  */
 export function computeReadiness(
   fundingEnabled: boolean,
   genesisReady: boolean,
-  stats: PoolStats,
+  walletFunded: boolean,
 ): ReadinessVerdict {
   if (!fundingEnabled) {
     return { ready: true, readyReason: "funding_disabled" };
@@ -138,16 +143,61 @@ export function computeReadiness(
   if (!genesisReady) {
     return { ready: false, readyReason: "genesis_wallet_not_ready" };
   }
-  if (stats.testUtxos === 0) {
-    return { ready: false, readyReason: "utxo_pool_empty" };
+  if (!walletFunded) {
+    return { ready: false, readyReason: "wallet_unfunded" };
   }
   return { ready: true, readyReason: "ready" };
 }
 
-/** Gather live state and apply {@link computeReadiness}. */
-function currentReadiness(): ReadinessVerdict & { stats: PoolStats } {
+/**
+ * Live inputs to the readiness verdict. Injected (defaulting to the real
+ * genesis accessors) so handler tests can drive the funds-query-error and
+ * unfunded branches without mutating process-global genesis state — Bun shares
+ * module globals across test files, so a leaked `ready` flag would corrupt an
+ * unrelated file's readiness assertions (see the readiness DI guideline in
+ * CLAUDE.md).
+ */
+export interface ReadinessInputs {
+  genesisReady: boolean;
+  fundsQuery: () => Promise<boolean>;
+}
+
+/**
+ * Gather live state and apply {@link computeReadiness}. The wallet-funds query
+ * (a single `getUtxos` call) runs only when its answer can change the verdict —
+ * i.e. funding is enabled and genesis is ready — so /ready stays cheap when the
+ * service is disabled or still syncing. Pool stats are gathered only for the
+ * /status diagnostic body, not for the readiness verdict.
+ *
+ * If the funds query itself throws, we report the distinct `funds_query_error`
+ * reason rather than `wallet_unfunded`: both are 503, but the former is honest
+ * that we could not determine funding (a wallet/storage fault) instead of
+ * asserting the wallet is empty.
+ */
+export async function currentReadiness(
+  inputs: ReadinessInputs = { genesisReady: isGenesisReady(), fundsQuery: isGenesisFunded },
+): Promise<ReadinessVerdict & { stats: PoolStats }> {
   const stats = getPoolStats();
-  const verdict = computeReadiness(config.FUNDING_ENABLED, isGenesisReady(), stats);
+  const { genesisReady, fundsQuery } = inputs;
+  let walletFunded = false;
+  if (config.FUNDING_ENABLED && genesisReady) {
+    try {
+      walletFunded = await fundsQuery();
+    } catch (err) {
+      // A wallet/storage failure on the funds query must not turn a readiness
+      // probe into a 500 — that breaks orchestrator health checks. Report a
+      // distinct 503 reason so operators see "couldn't determine funding", not
+      // a false "wallet is empty"; the probe self-corrects on the next poll.
+      // Logged at error: a persistent inability to read the UTXO store is a
+      // production fault, not a routine warning.
+      logger.error({
+        event: "readiness.funds_query_failed",
+        meta: { error: err instanceof Error ? err.message : String(err) },
+      });
+      return { ready: false, readyReason: "funds_query_error", stats };
+    }
+  }
+  const verdict = computeReadiness(config.FUNDING_ENABLED, genesisReady, walletFunded);
   return { ...verdict, stats };
 }
 
@@ -157,8 +207,8 @@ function currentReadiness(): ReadinessVerdict & { stats: PoolStats } {
  * (when known), and the bootstrap phase. Serialized via JSONBigInt so any
  * bigint fields added to the envelope survive stringification.
  */
-export function handleStatus(_req: Request): Response {
-  const readiness = currentReadiness();
+export async function handleStatus(_req: Request): Promise<Response> {
+  const readiness = await currentReadiness();
   return new Response(
     JSONBigInt.stringify({
       ready: readiness.ready,
@@ -172,8 +222,8 @@ export function handleStatus(_req: Request): Response {
 }
 
 /** GET /ready — readiness probe. 200 when ready, 503 otherwise. */
-export function handleReady(_req: Request): Response {
-  const readiness = currentReadiness();
+export async function handleReady(_req: Request): Promise<Response> {
+  const readiness = await currentReadiness();
   return new Response(
     JSONBigInt.stringify({
       ready: readiness.ready,
