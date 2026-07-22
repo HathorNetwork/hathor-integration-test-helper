@@ -105,6 +105,7 @@ export function handleMultisigWallet(req: Request): Response {
 export type ReadyReason =
   | "funding_disabled"
   | "genesis_wallet_not_ready"
+  | "funding_degraded"
   | "wallet_unfunded"
   | "funds_query_error"
   | "ready";
@@ -122,26 +123,40 @@ export interface ReadinessVerdict {
  *
  *  - funding off                          → ready    (wallet-generation-only mode)
  *  - genesis not yet synced               → not ready (genesis_wallet_not_ready)
+ *  - funding bootstrap degraded           → not ready (funding_degraded)
  *  - genesis ready, wallet has no funds   → not ready (wallet_unfunded)
  *  - genesis ready, wallet has funds      → ready
  *
  * Readiness gates on the *wallet*, not the test pool — the wallet is the
  * source of truth. As long as it holds spendable UTXOs the service can fund
  * clients (small requests from the pool, large requests wallet-sourced), even
- * when the test pool is momentarily empty between splits. Kept pure (no
- * module reads or I/O) so it can be unit-tested by passing inputs directly;
- * the caller performs the wallet query and passes the boolean.
+ * when the test pool is momentarily empty between splits.
+ *
+ * The one case the wallet verdict alone gets wrong is a degraded bootstrap: if
+ * the initial split could not seed the pool, the genesis reward can still
+ * unlock on its own and flip `walletFunded` true, so `/ready` would report 200
+ * over an empty pool the bootstrap has given up refilling. `startupDegraded`
+ * closes that trap — a degraded funding subsystem is never ready, whatever the
+ * wallet holds. Checked after genesis liveness so a genesis that never synced
+ * still reports the more specific `genesis_wallet_not_ready`.
+ *
+ * Kept pure (no module reads or I/O) so it can be unit-tested by passing inputs
+ * directly; the caller reads live state and passes the booleans.
  */
 export function computeReadiness(
   fundingEnabled: boolean,
   genesisReady: boolean,
   walletFunded: boolean,
+  startupDegraded: boolean,
 ): ReadinessVerdict {
   if (!fundingEnabled) {
     return { ready: true, readyReason: "funding_disabled" };
   }
   if (!genesisReady) {
     return { ready: false, readyReason: "genesis_wallet_not_ready" };
+  }
+  if (startupDegraded) {
+    return { ready: false, readyReason: "funding_degraded" };
   }
   if (!walletFunded) {
     return { ready: false, readyReason: "wallet_unfunded" };
@@ -160,6 +175,7 @@ export function computeReadiness(
 export interface ReadinessInputs {
   genesisReady: boolean;
   fundsQuery: () => Promise<boolean>;
+  startupDegraded: boolean;
 }
 
 /**
@@ -175,12 +191,18 @@ export interface ReadinessInputs {
  * asserting the wallet is empty.
  */
 export async function currentReadiness(
-  inputs: ReadinessInputs = { genesisReady: isGenesisReady(), fundsQuery: isGenesisFunded },
+  inputs: ReadinessInputs = {
+    genesisReady: isGenesisReady(),
+    fundsQuery: isGenesisFunded,
+    startupDegraded: getStartupState().phase === "degraded",
+  },
 ): Promise<ReadinessVerdict & { stats: PoolStats }> {
   const stats = getPoolStats();
-  const { genesisReady, fundsQuery } = inputs;
+  const { genesisReady, fundsQuery, startupDegraded } = inputs;
   let walletFunded = false;
-  if (config.FUNDING_ENABLED && genesisReady) {
+  // Skip the funds query when degraded: the verdict is already decided and the
+  // query would only add a wallet read whose answer cannot change it.
+  if (config.FUNDING_ENABLED && genesisReady && !startupDegraded) {
     try {
       walletFunded = await fundsQuery();
     } catch (err) {
@@ -197,7 +219,12 @@ export async function currentReadiness(
       return { ready: false, readyReason: "funds_query_error", stats };
     }
   }
-  const verdict = computeReadiness(config.FUNDING_ENABLED, genesisReady, walletFunded);
+  const verdict = computeReadiness(
+    config.FUNDING_ENABLED,
+    genesisReady,
+    walletFunded,
+    startupDegraded,
+  );
   return { ...verdict, stats };
 }
 

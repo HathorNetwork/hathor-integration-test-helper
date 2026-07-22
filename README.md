@@ -51,7 +51,8 @@ OpenAPI document lands with the project-docs PR.
 | `readyReason`                | `ready` | Meaning                                          |
 | ---------------------------- | ------- | ------------------------------------------------ |
 | `funding_disabled`           | `true`  | `FUNDING_ENABLED=false` — wallet-generation-only mode |
-| `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or degraded)  |
+| `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or the genesis wallet never became ready) |
+| `funding_degraded`           | `false` | Genesis ready, but the funding bootstrap degraded (e.g. the initial split could not seed the pool) — never ready even if the wallet later shows funds |
 | `wallet_unfunded`            | `false` | Genesis ready, but the wallet holds no spendable UTXOs (e.g. a block reward still height-locked) |
 | `funds_query_error`          | `false` | Genesis ready, but the wallet funds query failed — funding state is unknown |
 | `ready`                      | `true`  | Genesis ready and the wallet holds spendable UTXOs |
@@ -91,11 +92,15 @@ test-wallet-helper:
     retries: 10
 ```
 
-> ℹ️ With `FUNDING_ENABLED=true`, `/ready` reflects the genesis wallet:
-> it returns `200 ready` once the wallet holds spendable UTXOs and `503
+> ℹ️ With `FUNDING_ENABLED=true`, `/ready` reflects the genesis wallet
+> and the funding bootstrap: it returns `200 ready` once the wallet
+> holds spendable UTXOs and the bootstrap completed, and `503
 > wallet_unfunded` until then — including the startup window where the
 > genesis block reward is still height-locked (it becomes spendable as
-> blocks are mined). Gating a funding-enabled stack on `/ready` is
+> blocks are mined). A bootstrap that could not seed the pool stays `503
+> funding_degraded` even after the wallet shows funds — that state does
+> not self-heal, so a stuck-degraded stack needs operator attention, not
+> more retries. Gating a funding-enabled stack on `/ready` is
 > correct; just allow enough healthcheck retries to cover that initial
 > reward-lock window.
 
