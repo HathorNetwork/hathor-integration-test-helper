@@ -51,7 +51,8 @@ OpenAPI document lands with the project-docs PR.
 | `readyReason`                | `ready` | Meaning                                          |
 | ---------------------------- | ------- | ------------------------------------------------ |
 | `funding_disabled`           | `true`  | `FUNDING_ENABLED=false` — wallet-generation-only mode |
-| `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or degraded)  |
+| `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or the genesis wallet never became ready) |
+| `funding_degraded`           | `false` | Genesis ready, but the funding bootstrap degraded (e.g. the initial split could not seed the pool) — never ready even if the wallet later shows funds |
 | `wallet_unfunded`            | `false` | Genesis ready, but the wallet holds no spendable UTXOs (e.g. a block reward still height-locked) |
 | `funds_query_error`          | `false` | Genesis ready, but the wallet funds query failed — funding state is unknown |
 | `ready`                      | `true`  | Genesis ready and the wallet holds spendable UTXOs |
