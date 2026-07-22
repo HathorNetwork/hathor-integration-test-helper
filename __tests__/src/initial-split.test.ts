@@ -28,6 +28,39 @@ function deps(overrides: Partial<InitialSplitDeps> = {}): InitialSplitDeps {
 }
 
 describe("runInitialSplitWithRetry", () => {
+  test("selects a locked reward and waits the lock out before splitting", async () => {
+    // The seeding path must (1) query with includeLocked so a still-height-
+    // locked genesis reward is a candidate, and (2) wait that lock out before
+    // splitting. With the available-only filter the reward never surfaces and
+    // waitForUtxoUnlock is unreachable — the exact bug this asserts against.
+    const order: string[] = [];
+    let seededLockedFlag: boolean | undefined;
+    let unlockedTxId: string | undefined;
+    let seeded = false;
+    await runInitialSplitWithRetry(
+      3,
+      deps({
+        reserveLargeFromWallet: async (_min, options) => {
+          seededLockedFlag = options?.includeLocked;
+          order.push("reserve");
+          return largeReserved;
+        },
+        waitForUtxoUnlock: async (txId) => {
+          unlockedTxId = txId;
+          order.push("wait");
+        },
+        splitUtxo: async () => {
+          order.push("split");
+          seeded = true;
+        },
+        getPoolStats: () => ({ testUtxos: seeded ? 10 : 0 }),
+      }),
+    );
+    expect(seededLockedFlag).toBe(true);
+    expect(unlockedTxId).toBe(largeReserved.utxo.txId);
+    expect(order).toEqual(["reserve", "wait", "split"]);
+  });
+
   test("resolves once the split seeds the pool", async () => {
     const splitCalls: Utxo[] = [];
     let poolSeeded = false;

@@ -79,7 +79,10 @@ async function refreshPoolFromWallet(): Promise<void> {
  * backoff waits) — the same DI-not-mock.module convention used elsewhere.
  */
 export interface InitialSplitDeps {
-  readonly reserveLargeFromWallet: (minAmount: bigint) => Promise<ReservedUtxo | null>;
+  readonly reserveLargeFromWallet: (
+    minAmount: bigint,
+    options?: { includeLocked?: boolean },
+  ) => Promise<ReservedUtxo | null>;
   readonly waitForUtxoUnlock: (txId: string) => Promise<void>;
   readonly splitUtxo: (utxo: Utxo) => Promise<void>;
   readonly releaseReservation: (utxo: { txId: string; index: number }) => void;
@@ -126,7 +129,13 @@ export async function runInitialSplitWithRetry(
   let lastError = "no output large enough to seed the pool";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const reserved = await deps.reserveLargeFromWallet(minSplittable);
+    // includeLocked: a fresh testnet's only large output is the still-height-
+    // locked genesis reward. Select it here even though it is locked, then wait
+    // the lock out below — the default (available-only) filter would hide it and
+    // seeding could never start. The live /fund path uses the default filter.
+    const reserved = await deps.reserveLargeFromWallet(minSplittable, {
+      includeLocked: true,
+    });
 
     if (reserved !== null) {
       try {

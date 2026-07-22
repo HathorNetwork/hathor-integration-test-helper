@@ -137,14 +137,23 @@ export function __resetSplitStateForTest(): void {
 }
 
 /**
- * Query the genesis wallet for an available large output (>= `minAmount`) and
- * atomically reserve it through the pool. Returns the reserved UTXO, or `null`
- * when the wallet currently exposes no output that large.
+ * Query the genesis wallet for a large output (>= `minAmount`) and atomically
+ * reserve it through the pool. Returns the reserved UTXO, or `null` when the
+ * wallet currently exposes no covering output.
  *
  * The size filter is pushed into the wallet query (`amount_bigger_than`) so
  * wallet-lib returns only covering candidates — we never materialise the full
  * UTXO set just to find one large output. `amount_bigger_than` is a strict `>`,
  * so it is set to `minAmount - 1` to keep the `>= minAmount` contract.
+ *
+ * `includeLocked` controls whether height-/time-locked outputs are candidates.
+ * wallet-lib's `only_available_utxos: true` drops BOTH time-locked and
+ * height-locked (block-reward) outputs (`memory_store` `isLocked`). The live
+ * `/fund` path needs an immediately-spendable output, so it leaves this false.
+ * Initial seeding sets it true: on a fresh testnet the genesis reward is still
+ * height-locked, and the split path must be able to *select* it and then wait
+ * the lock out via {@link waitForUtxoUnlock} — with the default filter it would
+ * never surface and seeding could never proceed.
  *
  * The pool holds only test-sized outputs, so the wallet is the source of truth
  * for large ones and is queried live. Atomicity holds because {@link
@@ -156,12 +165,13 @@ export function __resetSplitStateForTest(): void {
  */
 export async function reserveLargeFromWallet(
   minAmount: bigint,
+  options: { includeLocked?: boolean } = {},
 ): Promise<ReservedUtxo | null> {
   const wallet = deps.getGenesisWallet();
   const { utxos } = await wallet.getUtxos({
     token: NATIVE_TOKEN_UID,
     amount_bigger_than: minAmount - 1n,
-    only_available_utxos: true,
+    only_available_utxos: !options.includeLocked,
   });
   for (const u of utxos) {
     const reserved = reserveLarge({ txId: u.tx_id, index: u.index, amount: u.amount });
