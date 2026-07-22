@@ -6,6 +6,7 @@ import {
   getReservedKeys,
   releaseReservation,
   reserveLarge,
+  reserveUtxo,
 } from "../../src/utxo-pool.service";
 import {
   splitUtxo,
@@ -108,6 +109,42 @@ describe("splitUtxo", () => {
     // not pooled (the genesis wallet retains it on-chain). The pool is empty.
     const stats = getPoolStats();
     expect(stats.testUtxos).toBe(0);
+  });
+
+  test("pools outputs by value, not position — change mid-array is skipped", async () => {
+    // The pool must ingest exactly the outputs whose value is splitAmount,
+    // wherever they sit. Emit the change in the MIDDLE of the outputs array:
+    // positional trust (indices 0..maxOutputs-1) would pool the 90000n change
+    // at index 1 as a test UTXO; value verification skips it and pools the
+    // split-sized outputs at their true indices.
+    const emitter = new EventEmitter();
+    const wallet = Object.assign(emitter, {
+      async buildTxTemplate() {
+        buildCount += 1;
+        return {
+          hash: "reordered-tx",
+          outputs: [{ value: 1000 }, { value: 90000 }, { value: 1000 }],
+        };
+      },
+      async getTx(id: string) {
+        return { id };
+      },
+    }) as unknown as FundWallet;
+    __setFundDepsForTest({
+      getGenesisWallet: () => wallet,
+      getGenesisAddress: () => "WjS6pizxsgNQypgYvGQ8jDB9JMS4P9nVgk",
+      newTemplateBuilder: fakeBuilder,
+      runSendTransaction: async () => {},
+    });
+
+    await splitUtxo({ txId: "big", index: 0, amount: 100000n });
+
+    expect(getPoolStats().testUtxos).toBe(2);
+    const indices = [reserveUtxo(500n).utxo, reserveUtxo(500n).utxo].map((u) => {
+      expect(u.txId).toBe("reordered-tx");
+      return u.index;
+    });
+    expect(indices.sort()).toEqual([0, 2]);
   });
 
   test("propagates send transaction errors", async () => {

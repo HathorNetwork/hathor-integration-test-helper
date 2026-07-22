@@ -316,19 +316,24 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
 
     scheduleReservationRelease(wallet, utxo, txId, "split");
 
+    // Pool by verified output value, not by positional trust: rather than
+    // assuming indices 0..maxOutputs-1 are the split outputs, read the built
+    // transaction and pool exactly the outputs whose value is splitAmount.
+    // This stays correct if wallet-lib ever reorders outputs, and it pools an
+    // exactly-split-sized change output too — legitimate, since any later
+    // wallet rescan (repopulatePoolFromWallet) would pool it anyway.
     const newTestUtxos: Utxo[] = [];
-    for (let i = 0; i < maxOutputs; i++) {
-      newTestUtxos.push({
-        txId,
-        index: i,
-        amount: splitAmount,
-      });
-    }
+    tx.outputs.forEach((output, index) => {
+      if (BigInt(output.value) === splitAmount) {
+        newTestUtxos.push({ txId, index, amount: splitAmount });
+      }
+    });
     addTestUtxos(newTestUtxos);
 
-    // The large change output is intentionally not pooled — only test-sized
-    // outputs are. It stays on-chain in the genesis wallet, and the next split
-    // rediscovers it via a live wallet query (reserveLargeFromWallet).
+    // A larger-than-split change output is excluded by the value check and
+    // intentionally not pooled. It stays on-chain in the genesis wallet, and
+    // the next split rediscovers it via a live wallet query
+    // (reserveLargeFromWallet).
 
     lastSplitAt = new Date().toISOString();
     lastSplitError = null;
