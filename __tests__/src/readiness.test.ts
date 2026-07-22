@@ -6,8 +6,11 @@ import { computeReadiness } from "../../src/routes";
 // holds funds. Tested by passing inputs directly, which keeps it free of
 // fullnode/config coupling.
 describe("computeReadiness", () => {
-  test("funding disabled is healthy regardless of genesis/funds", () => {
-    expect(computeReadiness(false, false, false, false)).toEqual({
+  test("funding disabled is healthy regardless of genesis/funds/degraded", () => {
+    // Degraded flag deliberately true: the kill switch outranks everything —
+    // a disabled service is intentionally healthy even if a previous funding
+    // bootstrap degraded before the flag was flipped.
+    expect(computeReadiness(false, false, false, true)).toEqual({
       ready: true,
       readyReason: "funding_disabled",
     });

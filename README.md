@@ -92,11 +92,15 @@ test-wallet-helper:
     retries: 10
 ```
 
-> ℹ️ With `FUNDING_ENABLED=true`, `/ready` reflects the genesis wallet:
-> it returns `200 ready` once the wallet holds spendable UTXOs and `503
+> ℹ️ With `FUNDING_ENABLED=true`, `/ready` reflects the genesis wallet
+> and the funding bootstrap: it returns `200 ready` once the wallet
+> holds spendable UTXOs and the bootstrap completed, and `503
 > wallet_unfunded` until then — including the startup window where the
 > genesis block reward is still height-locked (it becomes spendable as
-> blocks are mined). Gating a funding-enabled stack on `/ready` is
+> blocks are mined). A bootstrap that could not seed the pool stays `503
+> funding_degraded` even after the wallet shows funds — that state does
+> not self-heal, so a stuck-degraded stack needs operator attention, not
+> more retries. Gating a funding-enabled stack on `/ready` is
 > correct; just allow enough healthcheck retries to cover that initial
 > reward-lock window.
 
