@@ -5,6 +5,7 @@ import {
   getPoolStats,
   getReservedKeys,
   releaseReservation,
+  reserveLarge,
 } from "../../src/utxo-pool.service";
 import {
   splitUtxo,
@@ -115,5 +116,36 @@ describe("splitUtxo", () => {
     await expect(
       splitUtxo({ txId: "fail", index: 0, amount: 100000n }),
     ).rejects.toThrow("mining failed");
+  });
+
+  test("releases the reserved input when the split send fails", async () => {
+    // The input must be reserved through the real pool first — production
+    // reserves via reserveLargeFromWallet before calling splitUtxo. Passing a
+    // bare literal (as the other tests do) leaves reservedSet empty, so
+    // releaseReservation is a no-op and its deletion can't be detected. Reserve
+    // for real, then assert the failed split empties reservedSet.
+    const utxo = { txId: "reserved-send-fail", index: 0, amount: 100000n };
+    expect(reserveLarge(utxo)).not.toBeNull();
+    expect(getReservedKeys()).toEqual(["reserved-send-fail:0"]);
+
+    lastSendError = new Error("mining failed");
+    await expect(splitUtxo(utxo)).rejects.toThrow("mining failed");
+
+    // Left reserved, the large output stays wedged in reservedSet forever.
+    expect(getReservedKeys()).toEqual([]);
+  });
+
+  test("releases the reserved input when dropped as dust", async () => {
+    // The sub-split-size (maxOutputs < 1) early-out has its own release. Amount
+    // is chosen to satisfy reserveLarge (> UTXO_SPLIT_AMOUNT, so it reserves)
+    // yet be too small to split (< 2 × UTXO_SPLIT_AMOUNT, so maxOutputs < 1).
+    // Reserve for real so the release is observable, then assert it fires.
+    const utxo = { txId: "reserved-dust", index: 0, amount: 1500n };
+    expect(reserveLarge(utxo)).not.toBeNull();
+    expect(getReservedKeys()).toEqual(["reserved-dust:0"]);
+
+    await splitUtxo(utxo);
+
+    expect(getReservedKeys()).toEqual([]);
   });
 });
