@@ -5,7 +5,6 @@ import { getGenesisWallet, getGenesisAddress } from "./genesis.service";
 import {
   addTestUtxos,
   reserveLarge,
-  returnChange,
   releaseReservation,
   populateFromUtxos,
   type Utxo,
@@ -232,9 +231,11 @@ export async function reserveLargeWithTimeout(
  */
 export async function splitUtxo(utxo: Utxo): Promise<void> {
   if (splitInProgress) {
+    // Release only — no returnChange: the input is always large (reserveLarge
+    // rejects test-sized amounts), and the pool holds only test-sized outputs.
+    // The wallet retains the output on-chain; the next split rediscovers it.
     logger.info({ event: "split.skipped_already_in_progress" });
     releaseReservation(utxo);
-    returnChange(utxo);
     return;
   }
   splitInProgress = true;
@@ -250,12 +251,13 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
     );
 
     if (maxOutputs < 1) {
+      // Release only — same rationale as the in-progress skip above: the input
+      // is large-but-unsplittable, which the pool never holds.
       logger.warn({
         event: "split.skipped_small_utxo",
         meta: { txId: utxo.txId, index: utxo.index, amount: utxo.amount.toString() },
       });
       releaseReservation(utxo);
-      returnChange(utxo);
       return;
     }
 
