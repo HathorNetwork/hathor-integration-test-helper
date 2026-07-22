@@ -22,9 +22,9 @@ import { awaitTxObserved, type TxObservationWallet } from "./tx-observation";
  * wallet-sourced large reservation, and pool repopulation — plus the shared DI
  * seam through which both this module and the /fund path build transactions.
  *
- * `fund.service` (the request path) depends on this module, never the reverse.
- * The two responsibilities — producing test UTXOs vs. consuming them — are
- * independent, so they live in separate files.
+ * The /fund request path (a later PR's `fund.service`) will depend on this
+ * module, never the reverse. The two responsibilities — producing test UTXOs
+ * vs. consuming them — are independent, so they live in separate files.
  */
 
 /**
@@ -101,8 +101,9 @@ export function __resetFundDepsForTest(): void {
   deps = defaultDeps();
 }
 
-// Split lifecycle state. Written here (splitUtxo), read by the fund layer's
-// getFundingLifecycleState and by attemptFund's SPLIT_IN_PROGRESS mapping.
+// Split lifecycle state. Written here (splitUtxo); a later PR's /fund layer
+// will read it to map a pool-exhausted reservation to a SPLIT_IN_PROGRESS
+// response and to report split status.
 let splitInProgress = false;
 let lastSplitAt: string | null = null;
 let lastSplitError: string | null = null;
@@ -356,7 +357,7 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
 
 /**
  * Defer releasing a reservation until the consuming tx has been observed
- * by the wallet (so a concurrent `rescanUtxoPool` cannot re-introduce
+ * by the wallet (so a concurrent pool rescan cannot re-introduce
  * the just-spent UTXO into a bucket). Bounded by `timeoutMs` (default
  * `OBSERVATION_TIMEOUT_MS`); on timeout the reservation is released with a
  * warn log.
