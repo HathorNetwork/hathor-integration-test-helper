@@ -130,6 +130,32 @@ describe("runInitialSplitWithRetry", () => {
     expect(released).toEqual([largeReserved.utxo, largeReserved.utxo]);
   });
 
+  test("a refresh throw does not collapse the remaining retries", async () => {
+    // refreshPool runs once per attempt. If its throw aborted the loop, a
+    // 3-attempt budget would become a single attempt. Assert all 3 run and the
+    // split's own retry still succeeds on the last one.
+    let splitCalls = 0;
+    let refreshCalls = 0;
+    let seeded = false;
+    await runInitialSplitWithRetry(
+      3,
+      deps({
+        splitUtxo: async () => {
+          splitCalls += 1;
+          if (splitCalls < 3) throw new Error("mining rejected");
+          seeded = true;
+        },
+        refreshPool: async () => {
+          refreshCalls += 1;
+          throw new Error("wallet not synced");
+        },
+        getPoolStats: () => ({ testUtxos: seeded ? 10 : 0 }),
+      }),
+    );
+    expect(splitCalls).toBe(3);
+    expect(refreshCalls).toBeGreaterThanOrEqual(2);
+  });
+
   test("treats a split that leaves the pool empty as a failure", async () => {
     // splitUtxo resolves but adds nothing (e.g. a maxOutputs<1 skip) — the pool
     // stays empty, so this must NOT be reported as a clean success.

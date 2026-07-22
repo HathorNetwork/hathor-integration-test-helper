@@ -126,7 +126,7 @@ export async function runInitialSplitWithRetry(
   // least 2 × UTXO_SPLIT_AMOUNT — the same threshold rescan and background
   // refill use. (Below that, splitUtxo computes maxOutputs < 1 and skips.)
   const minSplittable = config.UTXO_SPLIT_AMOUNT * 2n;
-  let lastError = "no output large enough to seed the pool";
+  let lastError = "no large output available to seed the pool";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // includeLocked: a fresh testnet's only large output is the still-height-
@@ -156,6 +156,10 @@ export async function runInitialSplitWithRetry(
         meta: { attempt, maxAttempts, error: lastError },
       });
     } else {
+      // reserveLargeFromWallet returns null both when no output is large enough
+      // AND when every large candidate is already reserved. Don't assert the
+      // former — name the honest, recoverable state instead of its opposite.
+      lastError = "no unreserved large output available to seed the pool";
       logger.warn({
         event: "startup.initial_split_no_large",
         meta: { attempt, maxAttempts },
@@ -163,8 +167,18 @@ export async function runInitialSplitWithRetry(
     }
 
     // A refresh may re-pool test-sized outputs that appeared meanwhile (genesis
-    // still settling, or a concurrent producer); if so, the pool is seeded.
-    await deps.refreshPool();
+    // still settling, or a concurrent producer); if so, the pool is seeded. A
+    // refresh throw must not abort the loop — that would collapse the remaining
+    // attempts into one. Record it and let the next attempt retry.
+    try {
+      await deps.refreshPool();
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : "Unknown refresh error";
+      logger.warn({
+        event: "startup.initial_split_refresh_failed",
+        meta: { attempt, maxAttempts, error: lastError },
+      });
+    }
     if (deps.getPoolStats().testUtxos > 0) return;
 
     if (attempt < maxAttempts) {
