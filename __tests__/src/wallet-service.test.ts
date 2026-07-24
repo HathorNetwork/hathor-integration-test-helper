@@ -2,8 +2,10 @@ import { describe, test, expect } from "bun:test";
 import {
   generateSimpleWallet,
   generateMultisigWallet,
+  generateShieldedAddresses,
 } from "../../src/wallet.service";
 import { isValidHathorAddress } from "../../src/address";
+import { config } from "../../src/config";
 
 describe("generateSimpleWallet", () => {
   test("returns a 24-word BIP39 seed and ADDRESS_COUNT addresses", () => {
@@ -90,5 +92,73 @@ describe("generateMultisigWallet", () => {
     // Mutating one wallet's arrays must not affect the others.
     w[0]!.addresses[0] = "MUTATED";
     expect(w[1]!.addresses[0]).not.toBe("MUTATED");
+  });
+});
+
+describe("generateShieldedAddresses", () => {
+  // A fixed integration-test seed — wallet-lib's genesis wallet — whose shielded
+  // pairs are committed in the Lib as the source of truth:
+  //   hathor-wallet-lib
+  //   __tests__/integration/configuration/precalculated-shielded-addresses.ts
+  //   → PRECALCULATED_SHIELDED_ADDRESSES[GENESIS_SEED]
+  // Deriving from the same seed here and pinning index 0 to those exact values
+  // proves this helper stays a byte-for-byte drop-in for the Lib's precalculated
+  // shielded addresses. If it drifts, one side changed derivation — reconcile,
+  // don't just relax the assertion.
+  const GENESIS_SEED =
+    "avocado spot town typical traffic vault danger century property shallow divorce festival spend attack anchor afford rotate green audit adjust fade wagon depart level";
+
+  // PRECALCULATED_SHIELDED_ADDRESSES[GENESIS_SEED][0] in the Lib fixture above.
+  const EXPECTED_INDEX_0 = {
+    bip32AddressIndex: 0,
+    shieldedBase58:
+      "K3LV1px1o7fQ2aHcowfiXc1EcJ2f2QPwYjLeU8VDZbXi17eesUj14FVJXzpziWwTUW3Sz5KkhvqHGAYocchWixTGr2mGf643i",
+    spendBase58: "WSFK832SPd6WKzpKkymj5Ya4JLnkvW2Y5A",
+    scanPubkey:
+      "02bdbcea0a38af8baac9831c7ce68a35cb165d513c7536a964691b3dff37f72392",
+    spendPubkey:
+      "02c6872a06b28b32fe31f79fe4c5dfc409b9f97d7b5f3c88a612ee937e46bda909",
+  };
+
+  // The exact key set of a PrecalculatedShieldedAddress entry, sorted. A field
+  // transposition (e.g. scanPubkey<->spendPubkey) or a rename would still pass a
+  // length/validity check, so lock the shape explicitly.
+  const EXPECTED_KEYS = [
+    "bip32AddressIndex",
+    "scanPubkey",
+    "shieldedBase58",
+    "spendBase58",
+    "spendPubkey",
+  ];
+
+  test("returns ADDRESS_COUNT pairs indexed 0..ADDRESS_COUNT-1", () => {
+    const pairs = generateShieldedAddresses(GENESIS_SEED);
+    expect(pairs).toHaveLength(config.ADDRESS_COUNT);
+    pairs.forEach((p, i) => expect(p.bip32AddressIndex).toBe(i));
+  });
+
+  test("every entry has exactly the drop-in field set", () => {
+    for (const p of generateShieldedAddresses(GENESIS_SEED)) {
+      expect(Object.keys(p).sort()).toEqual(EXPECTED_KEYS);
+    }
+  });
+
+  test("index 0 matches the wallet-lib committed shielded fixture (source of truth)", () => {
+    const pairs = generateShieldedAddresses(GENESIS_SEED);
+    expect(pairs[0]).toEqual(EXPECTED_INDEX_0);
+  });
+
+  test("is deterministic: same seed derives byte-identical pairs", () => {
+    expect(generateShieldedAddresses(GENESIS_SEED)).toEqual(
+      generateShieldedAddresses(GENESIS_SEED),
+    );
+  });
+
+  test("generateSimpleWallet populates shieldedAddresses with the same contract", () => {
+    const w = generateSimpleWallet();
+    expect(w.shieldedAddresses).toHaveLength(config.ADDRESS_COUNT);
+    for (const p of w.shieldedAddresses!) {
+      expect(Object.keys(p).sort()).toEqual(EXPECTED_KEYS);
+    }
   });
 });
