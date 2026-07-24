@@ -5,7 +5,7 @@
     "": {
       "name": "hathor-integration-test-helper",
       "dependencies": {
-        "@hathor/wallet-lib": "4.0.0",
+        "@hathor/wallet-lib": "4.1.0",
       },
       "devDependencies": {
         "@types/bun": "1.3.9",
@@ -16,12 +16,12 @@
     },
   },
   "patchedDependencies": {
-    "@hathor/wallet-lib@4.0.0": "patches/@hathor%2Fwallet-lib@4.0.0.patch",
+    "@hathor/wallet-lib@4.1.0": "patches/@hathor%2Fwallet-lib@4.1.0.patch",
   },
   "packages": {
     "@hathor/ct-crypto-provider": ["@hathor/ct-crypto-provider@0.0.1-shielded", "", {}, "sha512-whK65ujRjmwAyj7bqJBlHwgM74WLwvokdiSxI7ux1rB8aMGj1vfI/JYGkCiTGwQtsZj0gf1vdoPq853MnjEyzg=="],
 
-    "@hathor/wallet-lib": ["@hathor/wallet-lib@4.0.0", "", { "dependencies": { "@hathor/ct-crypto-provider": "0.0.1-shielded", "axios": "1.7.7", "bitcore-lib": "8.25.10", "bitcore-mnemonic": "8.25.10", "buffer": "6.0.3", "crypto-js": "4.2.0", "isomorphic-ws": "5.0.0", "lodash": "4.17.21", "queue-microtask": "1.2.3", "ws": "8.17.1", "zod": "3.23.8" } }, "sha512-9nOHxAO+itXPh6IhlxhhL70eEjsubXobEYSsARIseSj/HRcHB8R2M2s3ivGDGCO12bCZ5FXGUVS3b3058Qkp/Q=="],
+    "@hathor/wallet-lib": ["@hathor/wallet-lib@4.1.0", "", { "dependencies": { "@hathor/ct-crypto-provider": "0.0.1-shielded", "axios": "1.7.7", "bitcore-lib": "8.25.10", "bitcore-mnemonic": "8.25.10", "buffer": "6.0.3", "crypto-js": "4.2.0", "isomorphic-ws": "5.0.0", "lodash": "4.17.21", "queue-microtask": "1.2.3", "ws": "8.17.1", "zod": "3.23.8" } }, "sha512-4R9t+tbg4h2TaPAmaT0R3N90xFiqk3BJ9zn5/hhwqv/X/Tds8ZffW3oMvKwdfcdoBROrL1BfvuZTeo/bXHl1fw=="],
 
     "@types/bun": ["@types/bun@1.3.9", "", { "dependencies": { "bun-types": "1.3.9" } }, "sha512-KQ571yULOdWJiMH+RIWIOZ7B2RXQGpL1YQrBtLIV3FqDcCu6FsbFUBwhdKUlCKUpS3PJDsHlJ1QKlpxoVR+xtw=="],
 

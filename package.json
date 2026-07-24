@@ -18,9 +18,9 @@
     "typescript": "5.9.3"
   },
   "dependencies": {
-    "@hathor/wallet-lib": "4.0.0"
+    "@hathor/wallet-lib": "4.1.0"
   },
   "patchedDependencies": {
-    "@hathor/wallet-lib@4.0.0": "patches/@hathor%2Fwallet-lib@4.0.0.patch"
+    "@hathor/wallet-lib@4.1.0": "patches/@hathor%2Fwallet-lib@4.1.0.patch"
   }
 }
