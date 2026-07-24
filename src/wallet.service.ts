@@ -1,14 +1,23 @@
 import hathorLib from "@hathor/wallet-lib";
+// Type-only import: erased at compile time, so it adds no runtime import and
+// cannot perturb wallet-lib's module load order. Mirrors the Lib's shielded
+// precalculated-address contract so drift becomes a compile error here — see
+// PrecalculatedShieldedAddress below.
+import type { IPrecalculatedShieldedAddress } from "@hathor/wallet-lib/lib/types";
 import { config } from "./config";
 
-// The shielded account-path constants come off hathorLib.constants, and
-// deriveShieldedAddress is lazy-required inside generateShieldedAddresses (below)
-// rather than deep-imported here. A top-level `import ".../lib/utils/shieldedAddress.js"`
-// pulls in wallet-lib's utils/helpers — which has a circular
-// transaction<->create_token_transaction dependency — loading it out of order
-// (before the package barrel) and breaking wallet-lib's whole module graph under Bun
-// on the CI runners. Going through the barrel (import hathorLib) first keeps the load
-// order sane.
+// The shielded account-path constants come off hathorLib.constants.
+// `deriveShieldedAddress` is not re-exported from the package barrel, so it has
+// to be reached by deep path; we require it lazily at call time (inside
+// generateShieldedAddresses, below) rather than deep-importing it at module load.
+// What the lazy require buys is call-time deferral, NOT load ordering: the
+// `import hathorLib` above is evaluated first regardless, so the barrel and its
+// transitive graph are already initialised before any deep import would run.
+// The circular transaction<->create_token_transaction dependency that once broke
+// this repo's Bun CI with `TypeError: The superclass is not a constructor` is
+// fixed at the source in wallet-lib 4.1.0 (#1137 makes those classes lazy), so
+// on 4.1.0 the deep import is safe either way — the lazy require just keeps this
+// module's load cheap.
 const { walletUtils, addressUtils, config: hathorConfig, constants } = hathorLib;
 
 // wallet-lib reads the network from its own module-level state during
@@ -17,21 +26,14 @@ const { walletUtils, addressUtils, config: hathorConfig, constants } = hathorLib
 hathorConfig.setNetwork(config.NETWORK);
 
 /**
- * A pre-calculated shielded address pair, one per BIP32 index. Field names
- * mirror wallet-lib's `IPrecalculatedShieldedAddress` so the payload is a
- * drop-in for the Lib's `preCalculatedShieldedAddresses` wallet option.
+ * A pre-calculated shielded address pair, one per BIP32 index. Aliased directly
+ * to wallet-lib's `IPrecalculatedShieldedAddress` (rather than hand-redeclared)
+ * so the payload is a provable drop-in for the Lib's `preCalculatedShieldedAddresses`
+ * wallet option: a rename or added field on the Lib side becomes a compile error
+ * here instead of silently-wrong output on the wire. The Lib type documents each
+ * field (shieldedBase58 / spendBase58 / scanPubkey / spendPubkey).
  */
-export interface PrecalculatedShieldedAddress {
-  bip32AddressIndex: number;
-  /** User-facing 71-byte shielded address (scan + spend pubkeys) */
-  shieldedBase58: string;
-  /** On-chain P2PKH derived from HASH160(spend_pubkey) */
-  spendBase58: string;
-  /** Compressed scan child pubkey, hex */
-  scanPubkey: string;
-  /** Compressed spend child pubkey, hex */
-  spendPubkey: string;
-}
+export type PrecalculatedShieldedAddress = IPrecalculatedShieldedAddress;
 
 export interface SimpleWallet {
   words: string;
@@ -76,9 +78,9 @@ export interface MultisigWallet {
 export function generateShieldedAddresses(
   words: string,
 ): PrecalculatedShieldedAddress[] {
-  // Lazy-required (not deep-imported at module load) so wallet-lib's circular
-  // helpers graph is initialised via the package barrel first — see the note by
-  // the imports above.
+  // Lazy require, deferred to call time — see the note by the imports above.
+  // The deep path is version-pinned to the wallet-lib 4.1.0 in package.json;
+  // `deriveShieldedAddress` is not on the package barrel yet.
   const { deriveShieldedAddress } = require("@hathor/wallet-lib/lib/utils/shieldedAddress.js");
   const rootXpriv = walletUtils.getXPrivKeyFromSeed(words, {
     networkName: config.NETWORK,
@@ -93,6 +95,25 @@ export function generateShieldedAddresses(
   const shieldedAddresses: PrecalculatedShieldedAddress[] = [];
   for (let i = 0; i < config.ADDRESS_COUNT; i++) {
     const info = deriveShieldedAddress(scanXpub, spendXpub, i, config.NETWORK);
+    // The deep require is untyped (`any`), so nothing catches a renamed or
+    // dropped field at compile time. Assert the shape at generation time —
+    // otherwise a drifted field would serialize to the wire as `undefined` and
+    // surface as an opaque failure deep inside a consuming wallet.
+    for (const field of [
+      "base58",
+      "spendAddress",
+      "scanPubkey",
+      "spendPubkey",
+    ] as const) {
+      if (typeof info[field] !== "string" || info[field].length === 0) {
+        throw new Error(
+          `deriveShieldedAddress returned an unexpected shape at index ${i}: ` +
+            `\`${field}\` is missing or not a non-empty string — the deep import ` +
+            `@hathor/wallet-lib/lib/utils/shieldedAddress.js has likely drifted ` +
+            `from the pinned 4.1.0 contract.`,
+        );
+      }
+    }
     shieldedAddresses.push({
       bip32AddressIndex: i,
       shieldedBase58: info.base58,
