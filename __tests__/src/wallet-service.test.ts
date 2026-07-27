@@ -96,19 +96,15 @@ describe("generateMultisigWallet", () => {
 });
 
 describe("generateShieldedAddresses", () => {
-  // A fixed integration-test seed — wallet-lib's genesis wallet — whose shielded
-  // pairs are committed in the Lib as the source of truth:
+  // Fixture:
   //   hathor-wallet-lib
   //   __tests__/integration/configuration/precalculated-shielded-addresses.ts
   //   → PRECALCULATED_SHIELDED_ADDRESSES[GENESIS_SEED]
-  // Deriving from the same seed here and pinning index 0 to those exact values
-  // proves this helper stays a byte-for-byte drop-in for the Lib's precalculated
-  // shielded addresses. If it drifts, one side changed derivation — reconcile,
-  // don't just relax the assertion.
+  // If it drifts, one side changed derivation — reconcile, don't just relax
+  // the assertion.
   const GENESIS_SEED =
     "avocado spot town typical traffic vault danger century property shallow divorce festival spend attack anchor afford rotate green audit adjust fade wagon depart level";
 
-  // PRECALCULATED_SHIELDED_ADDRESSES[GENESIS_SEED][0] in the Lib fixture above.
   const EXPECTED_INDEX_0 = {
     bip32AddressIndex: 0,
     shieldedBase58:
