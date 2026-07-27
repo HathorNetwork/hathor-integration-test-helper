@@ -11,7 +11,7 @@ const PATCHED_FRAGMENT = "Failed to parse String to BigInt";
 /**
  * Tests for the wallet-lib BigInt-reviver compatibility patch.
  *
- * The patch itself lives at `patches/@hathor%2Fwallet-lib@3.0.1.patch`
+ * The patch itself lives at `patches/@hathor%2Fwallet-lib@4.1.0.patch`
  * and is applied at install time by `bun install` (registered via
  * `patchedDependencies` in package.json). It extends the upstream
  * SyntaxError-message allowlist with Bun's specific wording so that
@@ -76,7 +76,7 @@ test("[sentinel] Bun's BigInt SyntaxError wording matches the patch's allowlist"
         "of falling back to the JS-parsed number.",
         "",
         "To fix:",
-        "  1. Edit patches/@hathor%2Fwallet-lib@3.0.1.patch",
+        "  1. Edit patches/@hathor%2Fwallet-lib@4.1.0.patch",
         `  2. Add "${actualMessage}" to the SyntaxError message allowlist`,
         "     in lib/utils/bigint.js",
         "  3. Run `bun install` to reapply the patch",
@@ -130,7 +130,7 @@ test("[sentinel] wallet-lib BigInt patch is applied in node_modules", async () =
       "scientific-notation number on Bun re-throws as a cryptic",
       "'unexpected error in bigIntReviver' deep inside wallet-lib.",
       "",
-      "Most likely cause: wallet-lib was upgraded (e.g. 3.0.1 → 3.0.2)",
+      "Most likely cause: wallet-lib was upgraded (e.g. 4.1.0 → 4.1.1)",
       "and the patch key in package.json's `patchedDependencies` no",
       "longer matches the installed version, so `bun install` skipped",
       "the patch. Check the install output for a patch-apply warning.",

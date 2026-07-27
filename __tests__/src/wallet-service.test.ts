@@ -105,16 +105,40 @@ describe("generateShieldedAddresses", () => {
   const GENESIS_SEED =
     "avocado spot town typical traffic vault danger century property shallow divorce festival spend attack anchor afford rotate green audit adjust fade wagon depart level";
 
-  const EXPECTED_INDEX_0 = {
-    bip32AddressIndex: 0,
-    shieldedBase58:
-      "K3LV1px1o7fQ2aHcowfiXc1EcJ2f2QPwYjLeU8VDZbXi17eesUj14FVJXzpziWwTUW3Sz5KkhvqHGAYocchWixTGr2mGf643i",
-    spendBase58: "WSFK832SPd6WKzpKkymj5Ya4JLnkvW2Y5A",
-    scanPubkey:
-      "02bdbcea0a38af8baac9831c7ce68a35cb165d513c7536a964691b3dff37f72392",
-    spendPubkey:
-      "02c6872a06b28b32fe31f79fe4c5dfc409b9f97d7b5f3c88a612ee937e46bda909",
-  };
+  // First, second and last index of the window. Index 0 alone would not catch a
+  // helper that derived every index from the same child key.
+  const EXPECTED_ENTRIES = [
+    {
+      bip32AddressIndex: 0,
+      shieldedBase58:
+        "K3LV1px1o7fQ2aHcowfiXc1EcJ2f2QPwYjLeU8VDZbXi17eesUj14FVJXzpziWwTUW3Sz5KkhvqHGAYocchWixTGr2mGf643i",
+      spendBase58: "WSFK832SPd6WKzpKkymj5Ya4JLnkvW2Y5A",
+      scanPubkey:
+        "02bdbcea0a38af8baac9831c7ce68a35cb165d513c7536a964691b3dff37f72392",
+      spendPubkey:
+        "02c6872a06b28b32fe31f79fe4c5dfc409b9f97d7b5f3c88a612ee937e46bda909",
+    },
+    {
+      bip32AddressIndex: 1,
+      shieldedBase58:
+        "K3P4LYwvC8EYFfZuBAjU4hhyqPvzPQX9w14HkZyAa8wKdw4oXDwzQ58c2hjh9MGhwb6dYEBJNiTRPQRKbHTiStac4PYpvr7Pq",
+      spendBase58: "WU2hD9d38tK9Gw1QuvT7Qc9Pe9ZvhuuCvY",
+      scanPubkey:
+        "03c053fdd3619ccf0b2abce410ff5719407235ee455d70ac4bd93f1f9a71f6dbd1",
+      spendPubkey:
+        "02a92a0f7422a1ccaf7fe061232e60194cee699984c778a60d2b8d9e6dae3b9825",
+    },
+    {
+      bip32AddressIndex: 21,
+      shieldedBase58:
+        "K3MyYHda8yMGRKwAK83VWa75EvkQpDF1xDY4d43GAxXwdh5DhyEQ66xC3zHbwKgkwBgT6MZEgjCUG9Rqc9LQkXAoj9GopLM59",
+      spendBase58: "WmeeEzLLdekdNHK7zjR6SMsTs5tTGdx834",
+      scanPubkey:
+        "035393fef4c915bc3da87dbea4cb89d1309cdf1a582a5b5e99b966f93d709e8e68",
+      spendPubkey:
+        "026b58f67069483d4573e7c64860ca4dfca835758d794e739fd2cf8684a532c2a9",
+    },
+  ];
 
   // The exact key set of a PrecalculatedShieldedAddress entry, sorted. A field
   // transposition (e.g. scanPubkey<->spendPubkey) or a rename would still pass a
@@ -139,9 +163,24 @@ describe("generateShieldedAddresses", () => {
     }
   });
 
-  test("index 0 matches the wallet-lib committed shielded fixture (source of truth)", () => {
+  test("pinned indexes match the wallet-lib committed shielded fixture (source of truth)", () => {
     const pairs = generateShieldedAddresses(GENESIS_SEED);
-    expect(pairs[0]).toEqual(EXPECTED_INDEX_0);
+    for (const expected of EXPECTED_ENTRIES) {
+      expect(pairs[expected.bip32AddressIndex]).toEqual(expected);
+    }
+  });
+
+  // The pinned entries above cover three indexes; this covers the rest by
+  // rejecting duplicates, so a helper that derived one child key for every
+  // index cannot pass on the strength of index 0 alone.
+  test("every index derives a distinct pair", () => {
+    const pairs = generateShieldedAddresses(GENESIS_SEED);
+    expect(new Set(pairs.map((p) => p.shieldedBase58)).size).toBe(
+      config.ADDRESS_COUNT,
+    );
+    expect(new Set(pairs.map((p) => p.spendBase58)).size).toBe(
+      config.ADDRESS_COUNT,
+    );
   });
 
   test("is deterministic: same seed derives byte-identical pairs", () => {
@@ -150,11 +189,14 @@ describe("generateShieldedAddresses", () => {
     );
   });
 
-  test("generateSimpleWallet populates shieldedAddresses with the same contract", () => {
+  test("generateSimpleWallet populates shieldedAddresses from its own seed", () => {
     const w = generateSimpleWallet();
     expect(w.shieldedAddresses).toHaveLength(config.ADDRESS_COUNT);
     for (const p of w.shieldedAddresses!) {
       expect(Object.keys(p).sort()).toEqual(EXPECTED_KEYS);
     }
+    // Shape alone would pass on pairs derived from an unrelated seed, which
+    // would hand callers shielded addresses this wallet cannot spend.
+    expect(w.shieldedAddresses).toEqual(generateShieldedAddresses(w.words));
   });
 });
