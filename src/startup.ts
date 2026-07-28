@@ -273,3 +273,18 @@ export function __resetStartupForTest(): void {
   bootPromise = null;
   setStartupState("idle", null);
 }
+
+/**
+ * Test-only: force a startup phase without running the bootstrap.
+ *
+ * Lets a handler test drive a phase-dependent branch — `/fund` refusing to
+ * serve while degraded — without standing up a failing bootstrap. Always pair
+ * with {@link __resetStartupForTest}: the phase is a process-global that Bun
+ * shares across test files.
+ */
+export function __setStartupStateForTest(
+  phase: StartupPhase,
+  lastError: string | null = null,
+): void {
+  setStartupState(phase, lastError);
+}

@@ -6,7 +6,11 @@ import {
   releaseReservation,
   reserveLarge,
 } from "../../src/utxo-pool.service";
-import { rescanUtxoPool, __resetFundStateForTest } from "../../src/fund.service";
+import {
+  rescanUtxoPool,
+  getFundingLifecycleState,
+  __resetFundStateForTest,
+} from "../../src/fund.service";
 import {
   scheduleReservationRelease,
   __setFundDepsForTest,
@@ -52,6 +56,48 @@ describe("rescanUtxoPool coalescing", () => {
     await Promise.all([rescanUtxoPool(), rescanUtxoPool(), rescanUtxoPool()]);
 
     expect(getUtxosCalls).toBe(1);
+  });
+});
+
+describe("rescan lifecycle stamping", () => {
+  test("a successful rescan records its timestamp and clears the error", async () => {
+    __setFundDepsForTest({
+      getGenesisWallet: () =>
+        ({
+          async getUtxos() {
+            return { utxos: [{ tx_id: "u", index: 0, amount: 1000n }] };
+          },
+        }) as unknown as FundWallet,
+    });
+
+    expect(getFundingLifecycleState().lastRescanAt).toBeNull();
+
+    await rescanUtxoPool();
+
+    const state = getFundingLifecycleState();
+    expect(state.lastRescanAt).not.toBeNull();
+    expect(state.lastRescanError).toBeNull();
+    // /status serialises this; it must be a parseable instant, not a marker.
+    expect(Number.isNaN(Date.parse(state.lastRescanAt!))).toBe(false);
+  });
+
+  test("a failed rescan stamps the timestamp alongside the error", async () => {
+    // The timestamp is written on the failure path too, so /status can never
+    // pair a fresh error with the previous success's time.
+    __setFundDepsForTest({
+      getGenesisWallet: () =>
+        ({
+          async getUtxos() {
+            throw new Error("wallet exploded");
+          },
+        }) as unknown as FundWallet,
+    });
+
+    await expect(rescanUtxoPool()).rejects.toThrow("wallet exploded");
+
+    const state = getFundingLifecycleState();
+    expect(state.lastRescanError).toBe("wallet exploded");
+    expect(state.lastRescanAt).not.toBeNull();
   });
 });
 

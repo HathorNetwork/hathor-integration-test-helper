@@ -129,8 +129,43 @@ describe("reserveLargeWithTimeout", () => {
   });
 
   test("fundAddress maps an exhausted large wait to FUND_TIMEOUT", async () => {
-    // A zero-ish timeout keeps the test fast: one immediate attempt, then the
-    // deadline is already past, so the wait returns null → FundTimeoutError.
+    // The wallet never exposes a covering output, so the bounded wait expires.
+    // A zero-ish budget keeps it fast: one immediate attempt, then the deadline
+    // has already passed.
+    let queries = 0;
+    __setFundDepsForTest({
+      getGenesisWallet: () =>
+        ({
+          async getUtxos() {
+            queries += 1;
+            return { utxos: [] };
+          },
+        }) as unknown as FundWallet,
+      getGenesisAddress: () => genesisAddress,
+      newTemplateBuilder: fakeBuilder,
+      runSendTransaction: async () => {},
+    });
+
+    // Drive the real mapping in fund.service rather than asserting on a
+    // hand-built FundTimeoutError: this is what /fund answers, and deleting the
+    // throw would otherwise leave a 500 in place of the documented 409.
+    const err = await fundAddress(genesisAddress, 30000n, 0).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(FundTimeoutError);
+    expect((err as FundTimeoutError).descriptor).toMatchObject({
+      code: "FUND_TIMEOUT",
+      status: 409,
+      retryable: true,
+    });
+    expect(queries).toBeGreaterThanOrEqual(1);
+    // A timed-out large request reserves nothing, so nothing can leak.
+    expect(getReservedKeys()).toHaveLength(0);
+  });
+
+  test("reserveLargeWithTimeout returns null at the deadline", async () => {
     __setFundDepsForTest({
       getGenesisWallet: () =>
         ({
@@ -141,9 +176,6 @@ describe("reserveLargeWithTimeout", () => {
     });
 
     await expect(reserveLargeWithTimeout(30000n, 0)).resolves.toBeNull();
-
-    // And the error type the /fund handler surfaces on that null:
-    expect(new FundTimeoutError(30000).descriptor.code).toBe("FUND_TIMEOUT");
   });
 });
 

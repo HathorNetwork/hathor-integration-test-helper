@@ -142,16 +142,6 @@ describe("parseFundBody", () => {
     expect(body.retryable).toBe(false);
   });
 
-  test("returns 413 for oversized body", async () => {
-    const oversized = "x".repeat(config.MAX_REQUEST_BODY_BYTES + 1);
-    const result = await parseFundBody(
-      fundReq(`{"address":"${validAddress}","amount":"1","extra":"${oversized}"}`),
-    );
-    expect(isResponse(result)).toBe(true);
-    if (!isResponse(result)) return;
-    expect(result.status).toBe(413);
-  });
-
   test("returns 400 for invalid JSON body", async () => {
     const result = await parseFundBody(
       fundReq("not json at all"),

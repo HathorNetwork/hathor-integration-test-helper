@@ -233,10 +233,16 @@ function isStaleUtxoError(err: unknown): boolean {
  *
  * If the fullnode rejects the tx because the UTXO was spent externally,
  * the pool is rescanned from wallet-lib and the operation retries once.
+ *
+ * `largeWaitMs` bounds the wait for a wallet-sourced output on a large request
+ * and defaults to the configured FUND_TIMEOUT_MS; it is a parameter for the
+ * same reason {@link reserveLargeWithTimeout}'s is, so a test can reach the
+ * FUND_TIMEOUT mapping without waiting out the real 30s budget.
  */
 export async function fundAddress(
   address: string,
   amount: bigint,
+  largeWaitMs: number = config.FUND_TIMEOUT_MS,
 ): Promise<FundResult> {
   const pendingRescan = rescanInProgress;
   if (pendingRescan) {
@@ -249,7 +255,7 @@ export async function fundAddress(
     await pendingRescan.catch(() => {});
   }
 
-  return attemptFund(address, amount, 1);
+  return attemptFund(address, amount, 1, largeWaitMs);
 }
 
 /** Internal: reserve a UTXO, build and send the tx, retrying once on stale-UTXO errors. */
@@ -257,6 +263,7 @@ async function attemptFund(
   address: string,
   amount: bigint,
   retriesLeft: number,
+  largeWaitMs: number,
 ): Promise<FundResult> {
   let reserved: ReservedUtxo;
   if (amount <= config.UTXO_SPLIT_AMOUNT) {
@@ -286,9 +293,9 @@ async function attemptFund(
     // from the wallet, waiting up to FUND_TIMEOUT_MS for a covering output to
     // become available (RFC: large requests queue for a refill rather than
     // failing immediately).
-    const large = await reserveLargeWithTimeout(amount);
+    const large = await reserveLargeWithTimeout(amount, largeWaitMs);
     if (large === null) {
-      throw new FundTimeoutError(config.FUND_TIMEOUT_MS);
+      throw new FundTimeoutError(largeWaitMs);
     }
     reserved = large;
   }
@@ -345,7 +352,7 @@ async function attemptFund(
       // a second stale surfaces the documented UtxoStaleError below.
       await rescanUtxoPool().catch(() => {});
       releaseReservation(utxo);
-      return attemptFund(address, amount, retriesLeft - 1);
+      return attemptFund(address, amount, retriesLeft - 1, largeWaitMs);
     }
     releaseReservation(utxo);
     if (isStaleUtxoError(err)) {

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { EventEmitter } from "node:events";
 import {
   populateFromUtxos,
+  getPoolStats,
   getReservedKeys,
   releaseReservation,
 } from "../../src/utxo-pool.service";
@@ -29,6 +30,8 @@ function restoreSharedState(): void {
 // DI seam, NOT mock.module: Bun's module mocks are process-global and leak
 // across test files (see CLAUDE.md). We inject plain fakes for the genesis
 // wallet, template builder, and send-transaction runner instead.
+
+const GENESIS = "WjS6pizxsgNQypgYvGQ8jDB9JMS4P9nVgk";
 
 let sendAttempts = 0;
 
@@ -150,5 +153,82 @@ describe("fund.service stale UTXO recovery", () => {
     expect(result.utxoSource).toBe("test");
     // 2 attempts: first fails (stale), rescan repopulates pool, second succeeds
     expect(sendAttempts).toBe(2);
+  });
+});
+
+/**
+ * Install deps whose built tx has the given outputs and hash, and which always
+ * broadcasts successfully — so these tests observe only the post-send path.
+ */
+function installOutputDeps(
+  outputs: Array<{ value: number | bigint }>,
+  hash: string | undefined,
+): void {
+  const emitter = new EventEmitter();
+  const wallet = Object.assign(emitter, {
+    async buildTxTemplate() {
+      return { hash, outputs };
+    },
+    async getUtxos() {
+      return { utxos: [] };
+    },
+    async getTx(id: string) {
+      return { id };
+    },
+  }) as unknown as FundWallet;
+
+  __setFundDepsForTest({
+    getGenesisWallet: () => wallet,
+    getGenesisAddress: () => GENESIS,
+    newTemplateBuilder: fakeBuilder,
+    runSendTransaction: async () => {},
+  });
+}
+
+describe("the fund path does not re-pool change", () => {
+  test("a test-sized second output is left on-chain, not pooled", async () => {
+    // The decisive shape: outputs differ, and index 1 is exactly pool-sized —
+    // precisely what a positional `returnChange({index: 1})` would pick up.
+    // It must not be pooled: returnChange guards on size, not ownership, and on
+    // a default-sized request the recipient's output is indistinguishable from
+    // change, so a mispick would pool a UTXO genesis does not own.
+    populateFromUtxos([{ txId: "seed", index: 0, value: 1000n }]);
+    installOutputDeps([{ value: 500n }, { value: 1000n }], "fund-tx");
+
+    const before = getPoolStats().testUtxos;
+    await fundAddress(GENESIS, 500n);
+
+    // The reserved input left the pool and nothing was added back.
+    expect(getPoolStats().testUtxos).toBe(before - 1);
+    expect(getReservedKeys()).toHaveLength(0);
+  });
+
+  test("a single-output tx leaves the pool unchanged", async () => {
+    populateFromUtxos([{ txId: "seed", index: 0, value: 1000n }]);
+    installOutputDeps([{ value: 1000n }], "fund-tx");
+
+    await fundAddress(GENESIS, 1000n);
+
+    expect(getPoolStats().testUtxos).toBe(0);
+    expect(getReservedKeys()).toHaveLength(0);
+  });
+});
+
+describe("a built tx with no hash", () => {
+  test("releases the reservation without re-pooling a possibly-spent input", async () => {
+    // The send resolved, so the input may well be spent, but without a hash the
+    // spending tx cannot be observed and the release cannot be deferred.
+    // Both halves matter: skipping the release strands the reservation forever
+    // (rescan and admit both skip reserved keys), and returning it to the pool
+    // would hand a spent output to the next request.
+    populateFromUtxos([{ txId: "seed", index: 0, value: 1000n }]);
+    installOutputDeps([{ value: 500n }, { value: 1000n }], undefined);
+
+    await expect(fundAddress(GENESIS, 500n)).rejects.toThrow(
+      "Fund transaction completed without a hash",
+    );
+
+    expect(getReservedKeys()).toHaveLength(0);
+    expect(getPoolStats().testUtxos).toBe(0);
   });
 });

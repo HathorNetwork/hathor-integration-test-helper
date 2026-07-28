@@ -7,8 +7,12 @@ import {
 } from "../../src/utxo-pool.service";
 import { generateSimpleWallet } from "../../src/wallet.service";
 import { __setGenesisStateForTest } from "../../src/genesis.service";
-import { __resetStartupForTest } from "../../src/startup";
+import {
+  __resetStartupForTest,
+  __setStartupStateForTest,
+} from "../../src/startup";
 import { __resetFundStateForTest } from "../../src/fund.service";
+import { getMetricsSnapshot } from "../../src/metrics";
 import {
   __setFundDepsForTest,
   __resetFundDepsForTest,
@@ -159,6 +163,20 @@ describe("POST /fund happy path and readiness", () => {
     expect(body.error).toBe("SERVICE_NOT_READY");
     expect(body.retryable).toBe(true);
   });
+
+  test("503 SERVICE_NOT_READY while the bootstrap is degraded", async () => {
+    // Genesis is live, but the bootstrap gave up refilling the pool. Serving
+    // here would answer POOL_EXHAUSTED (retryable) forever over a pool nothing
+    // will refill, while /ready reports 503 for the same instant.
+    __setStartupStateForTest("degraded", "initial split failed");
+
+    const res = await handleFund(fundRequest({ address: validAddress, amount: 500 }));
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("SERVICE_NOT_READY");
+    expect(body.message).toContain("degraded");
+  });
 });
 
 describe("GET /metrics", () => {
@@ -169,5 +187,27 @@ describe("GET /metrics", () => {
     expect(body).toHaveProperty("routes");
     expect(typeof body.fundCount).toBe("number");
     expect(typeof body.splitCount).toBe("number");
+  });
+
+  test("a successful fund increments fundCount by exactly one", async () => {
+    // Read the counter back rather than asserting its type: `fundCount` is a
+    // number initialised to 0, so a type assertion cannot fail for any
+    // regression that drops the recordFundSuccess() call entirely.
+    const before = getMetricsSnapshot().fundCount;
+
+    const res = await handleFund(fundRequest({ address: validAddress, amount: 500 }));
+    expect(res.status).toBe(200);
+
+    expect(getMetricsSnapshot().fundCount).toBe(before + 1);
+  });
+
+  test("a failed fund does not increment fundCount", async () => {
+    __setRouteGenesisForTest({ ready: () => false });
+    const before = getMetricsSnapshot().fundCount;
+
+    const res = await handleFund(fundRequest({ address: validAddress, amount: 500 }));
+    expect(res.status).toBe(503);
+
+    expect(getMetricsSnapshot().fundCount).toBe(before);
   });
 });

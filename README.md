@@ -61,13 +61,46 @@ Error body (all failures): `{ "error": <code>, "message": <text>, "retryable": <
 | Status | `error`             | `retryable` | When                                             |
 | ------ | ------------------- | ----------- | ------------------------------------------------ |
 | `400`  | `INVALID_REQUEST`   | `false`     | Malformed body, bad address, or bad amount       |
+| `400`  | `INVALID_REQUEST`   | `false`     | Funding is disabled (`FUNDING_ENABLED=false`) — deliberately *not* retryable, since this deployment can never fund |
+| `404`  | `INVALID_REQUEST`   | `false`     | Unknown path, or a known path called with an unsupported method (e.g. `GET /fund`) |
 | `413`  | `INVALID_REQUEST`   | `false`     | Body exceeds `MAX_REQUEST_BODY_BYTES`            |
-| `503`  | `SERVICE_NOT_READY` | `true`      | Genesis wallet has not synced yet                |
+| `503`  | `SERVICE_NOT_READY` | `true`      | Genesis wallet has not synced yet, or the funding bootstrap is `degraded` |
 | `409`  | `POOL_EXHAUSTED`    | `true`      | No UTXO available for the requested amount        |
 | `409`  | `SPLIT_IN_PROGRESS` | `true`      | Test pool empty while a refill split runs; retry shortly |
 | `409`  | `FUND_TIMEOUT`      | `true`      | Timed out waiting for a large UTXO               |
 | `409`  | `UTXO_STALE`        | `true`      | Reserved UTXO was spent externally; rescan ran   |
 | `500`  | `INTERNAL_ERROR`    | `false`     | Unexpected failure                               |
+
+#### Cost model
+
+Every `/fund` request consumes exactly **one** pool UTXO of
+`UTXO_SPLIT_AMOUNT`, regardless of the `amount` requested. The pool holds
+only exactly-`UTXO_SPLIT_AMOUNT` outputs, and the change from a
+smaller request falls below that size, so it is neither re-pooled nor
+recoverable by the pool afterwards — it stays on-chain in the genesis
+wallet, where only a wallet-sourced *large* reservation could reach it.
+
+The practical consequence: a suite issuing many small requests drains the
+pool at the same rate as one issuing full-sized ones, and the difference
+between the requested amount and `UTXO_SPLIT_AMOUNT` is retained by the
+genesis wallet rather than recycled. With the default
+`UTXO_SPLIT_AMOUNT=1000`, 200 requests for `{"amount": 1}` consume 200
+pool UTXOs and leave 199,800 units parked outside the pool. Prefer
+omitting `amount` (which defaults to `UTXO_SPLIT_AMOUNT`) unless a test
+specifically needs a different value.
+
+### `GET /metrics`
+
+`{ "routes": { "<path>": { requests, errors, avgLatencyMs } }, ... }` plus
+the funding counters:
+
+| Counter            | Meaning                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| `fundCount`        | Successful `/fund` transactions                            |
+| `staleUtxoRescans` | Completed pool rescans (a stale UTXO is the only trigger today) |
+| `splitCount`       | Successful UTXO splits                                     |
+| `splitFailures`    | Splits that threw                                          |
+| `refillFailures`   | Background refills that failed, including those that failed in the wallet query *before* reaching the split — those never reach `splitFailures` |
 
 ### Readiness semantics
 
@@ -90,9 +123,20 @@ wallet — even before the first split has refilled the test pool.
 `/status` additionally reports a `startup.phase` of `idle`,
 `initializing`, `ready`, `disabled`, or `degraded`, plus a `funding`
 block (`splitInProgress`, `rescanInProgress`, `refillScheduled`, and the
-last split/rescan timestamps and errors). A bad seed or an unreachable
-fullnode lands in `degraded` **without** taking the service down — the
-wallet endpoints keep serving.
+last split/rescan/refill timestamps and errors). A bad seed or an
+unreachable fullnode lands in `degraded` **without** taking the service
+down — the wallet endpoints keep serving.
+
+Each `last*At` is written on both the success and the failure path of its
+operation, so the timestamp always describes the outcome reported next to
+it; a non-`null` `last*Error` alongside a `last*At` means that run failed
+at that time, not that an older run succeeded then.
+
+While the bootstrap is `degraded`, `POST /fund` returns `503
+SERVICE_NOT_READY` rather than accepting work — a degraded bootstrap has
+stopped refilling the pool, so serving would only produce
+`409 POOL_EXHAUSTED` indefinitely while `/ready` reported `503` for the
+same instant.
 
 ### Health checks
 

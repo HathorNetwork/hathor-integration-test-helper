@@ -56,6 +56,9 @@ const fakeBuilder = (): FundTemplateBuilder => {
 };
 
 beforeEach(() => {
+  // Reset alongside its neighbours: sendBehavior is module-level and assigned
+  // inside test bodies, so without this the previous test's mode carries over.
+  sendBehavior = "stale-then-stale";
   sendAttempts = 0;
   txCounter = 0;
   populateFromUtxos([]);
@@ -102,7 +105,9 @@ describe("fund.service typed errors", () => {
     populateFromUtxos([{ txId: "stale-utxo", index: 0, value: 1000n }]);
 
     const result = await fundAddress(genesisAddress, 500n);
-    expect(result.txId).toMatch(/^tx-/);
+    // toBe, not toMatch(/^tx-/): both tx-1 and tx-2 match that pattern, so it
+    // would pass even if the retry never happened.
+    expect(result.txId).toBe("tx-2");
     expect(sendAttempts).toBe(2);
   });
 
