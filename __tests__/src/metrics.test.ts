@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import {
   recordHttpRequest,
+  recordSplit,
   getMetricsSnapshot,
   __resetMetricsForTest,
 } from "../../src/metrics";
@@ -8,8 +9,20 @@ import {
 beforeEach(() => __resetMetricsForTest());
 
 describe("metrics", () => {
-  test("empty snapshot has empty routes map", () => {
-    expect(getMetricsSnapshot()).toEqual({ routes: {} });
+  test("empty snapshot has empty routes map and zeroed counters", () => {
+    expect(getMetricsSnapshot()).toEqual({
+      routes: {},
+      splitCount: 0,
+      splitFailures: 0,
+    });
+  });
+
+  test("split counters appear in the snapshot", () => {
+    recordSplit(true);
+    recordSplit(false);
+    const snap = getMetricsSnapshot();
+    expect(snap.splitCount).toBe(1);
+    expect(snap.splitFailures).toBe(1);
   });
 
   test("counts requests and averages latency to 2 decimals", () => {

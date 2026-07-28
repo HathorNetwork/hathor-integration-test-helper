@@ -1,10 +1,10 @@
 /**
- * Per-route HTTP metrics. Subset shipping with PR2; the fund-/split-/
- * rescan-specific counters land in their natural PRs (PR4/PR5).
+ * Per-route HTTP metrics plus UTXO-split counters. The fund and rescan
+ * counters land alongside the /fund endpoint.
  *
- * Snapshot is exposed via `getMetricsSnapshot` so future `/metrics`
- * route handlers and tests can read counters without reaching into
- * module state directly.
+ * The snapshot is exposed via `getMetricsSnapshot` so the `/metrics` route
+ * handler and tests can read counters without reaching into module state
+ * directly.
  */
 
 interface RouteMetric {
@@ -14,6 +14,12 @@ interface RouteMetric {
 }
 
 let routeMetrics = new Map<string, RouteMetric>();
+
+// Funding-subsystem counters. Kept as module-level primitives (not a map)
+// because the set is fixed and small; the /metrics snapshot exposes them
+// alongside the per-route table.
+let splitCount = 0;
+let splitFailures = 0;
 
 function getRouteMetric(route: string): RouteMetric {
   const existing = routeMetrics.get(route);
@@ -35,6 +41,15 @@ export function recordHttpRequest(
   if (status >= 400) m.errors += 1;
 }
 
+/** Record a UTXO split attempt, incrementing successes or failures. */
+export function recordSplit(success: boolean): void {
+  if (success) {
+    splitCount += 1;
+    return;
+  }
+  splitFailures += 1;
+}
+
 export interface RouteSnapshot {
   requests: number;
   errors: number;
@@ -43,9 +58,11 @@ export interface RouteSnapshot {
 
 export interface MetricsSnapshot {
   routes: Record<string, RouteSnapshot>;
+  splitCount: number;
+  splitFailures: number;
 }
 
-/** Point-in-time view of the per-route counters. */
+/** Point-in-time view of the per-route counters and split operations. */
 export function getMetricsSnapshot(): MetricsSnapshot {
   const routes: MetricsSnapshot["routes"] = {};
   for (const [route, m] of routeMetrics.entries()) {
@@ -58,10 +75,12 @@ export function getMetricsSnapshot(): MetricsSnapshot {
           : Number((m.totalLatencyMs / m.requests).toFixed(2)),
     };
   }
-  return { routes };
+  return { routes, splitCount, splitFailures };
 }
 
-/** Test-only: clear all per-route counters. */
+/** Test-only: clear all per-route counters and split counters. */
 export function __resetMetricsForTest(): void {
   routeMetrics = new Map();
+  splitCount = 0;
+  splitFailures = 0;
 }

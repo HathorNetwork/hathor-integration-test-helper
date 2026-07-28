@@ -40,12 +40,30 @@ describe("readiness/status/live handlers (real modules)", () => {
     // test above under a different Bun file order.
     const verdict = await currentReadiness({
       genesisReady: true,
+      startupDegraded: false,
       fundsQuery: async () => {
         throw new Error("wallet storage unavailable");
       },
     });
     expect(verdict.ready).toBe(false);
     expect(verdict.readyReason).toBe("funds_query_error");
+  });
+
+  test("readiness reports funding_degraded without querying wallet funds", async () => {
+    // A degraded bootstrap short-circuits: the verdict is decided before any
+    // funds query, so a throwing query must never be reached.
+    let fundsQueried = false;
+    const verdict = await currentReadiness({
+      genesisReady: true,
+      startupDegraded: true,
+      fundsQuery: async () => {
+        fundsQueried = true;
+        throw new Error("should not be called");
+      },
+    });
+    expect(verdict.ready).toBe(false);
+    expect(verdict.readyReason).toBe("funding_degraded");
+    expect(fundsQueried).toBe(false);
   });
 
   test("GET /live is always 200 live:true", async () => {
