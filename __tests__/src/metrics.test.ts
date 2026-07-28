@@ -18,6 +18,7 @@ describe("metrics", () => {
       staleUtxoRescans: 0,
       splitCount: 0,
       splitFailures: 0,
+      refillFailures: 0,
     });
   });
 

@@ -22,6 +22,7 @@ let fundCount = 0;
 let staleUtxoRescans = 0;
 let splitCount = 0;
 let splitFailures = 0;
+let refillFailures = 0;
 
 function getRouteMetric(route: string): RouteMetric {
   const existing = routeMetrics.get(route);
@@ -63,9 +64,26 @@ export function recordSplit(success: boolean): void {
   splitFailures += 1;
 }
 
-/** Increment the stale-UTXO rescan counter. */
+/**
+ * Increment the pool-rescan counter.
+ *
+ * Counts every completed {@link rescanUtxoPool}, whatever triggered it. The
+ * snapshot field is named `staleUtxoRescans` because a stale UTXO is currently
+ * the only trigger; a second caller would make the name wrong, not the counter.
+ */
 export function recordRescan(): void {
   staleUtxoRescans += 1;
+}
+
+/**
+ * Increment the background-refill failure counter.
+ *
+ * A refill can fail before `splitUtxo` is ever reached (the wallet query in
+ * `reserveLargeFromWallet` throws), which `recordSplit(false)` would not see —
+ * so the refill path counts its own failures rather than relying on the split's.
+ */
+export function recordRefillFailure(): void {
+  refillFailures += 1;
 }
 
 export interface MetricsSnapshot {
@@ -74,6 +92,7 @@ export interface MetricsSnapshot {
   staleUtxoRescans: number;
   splitCount: number;
   splitFailures: number;
+  refillFailures: number;
 }
 
 /** Point-in-time view of the per-route counters and funding operations. */
@@ -89,7 +108,14 @@ export function getMetricsSnapshot(): MetricsSnapshot {
           : Number((m.totalLatencyMs / m.requests).toFixed(2)),
     };
   }
-  return { routes, fundCount, staleUtxoRescans, splitCount, splitFailures };
+  return {
+    routes,
+    fundCount,
+    staleUtxoRescans,
+    splitCount,
+    splitFailures,
+    refillFailures,
+  };
 }
 
 /** Test-only: clear all per-route counters and funding counters. */
@@ -99,4 +125,5 @@ export function __resetMetricsForTest(): void {
   staleUtxoRescans = 0;
   splitCount = 0;
   splitFailures = 0;
+  refillFailures = 0;
 }

@@ -9,7 +9,7 @@ import {
 } from "./utxo-pool.service";
 import { config } from "./config";
 import { logger } from "./logger";
-import { recordRescan } from "./metrics";
+import { recordRescan, recordRefillFailure } from "./metrics";
 import {
   getFundDeps,
   reserveLargeFromWallet,
@@ -46,6 +46,22 @@ let backgroundRefillTimer: ReturnType<typeof setTimeout> | null = null;
 
 let lastRescanAt: string | null = null;
 let lastRescanError: string | null = null;
+let lastRefillAt: string | null = null;
+let lastRefillError: string | null = null;
+
+/**
+ * Delay before a scheduled refill actually splits. See
+ * {@link triggerBackgroundRefill} for why it exists; it is a module-level
+ * binding rather than a constant so tests can collapse it to ~0 and observe
+ * the timer body, which at 1.5s never runs before a test's afterEach clears it.
+ */
+const DEFAULT_REFILL_DELAY_MS = 1_500;
+let refillDelayMs = DEFAULT_REFILL_DELAY_MS;
+
+/** Test-only: shorten the refill delay so the timer body runs within a test. */
+export function __setRefillDelayForTest(ms: number): void {
+  refillDelayMs = ms;
+}
 
 /**
  * Test-only: reset the module's background-operation state so a test that
@@ -60,6 +76,9 @@ export function __resetFundStateForTest(): void {
   rescanInProgress = null;
   lastRescanAt = null;
   lastRescanError = null;
+  lastRefillAt = null;
+  lastRefillError = null;
+  refillDelayMs = DEFAULT_REFILL_DELAY_MS;
   __resetSplitStateForTest();
 }
 
@@ -72,9 +91,17 @@ export interface FundingLifecycleState {
   lastSplitError: string | null;
   lastRescanAt: string | null;
   lastRescanError: string | null;
+  lastRefillAt: string | null;
+  lastRefillError: string | null;
 }
 
-/** Return a point-in-time snapshot of split, rescan, and refill states. */
+/**
+ * Return a point-in-time snapshot of split, rescan, and refill states.
+ *
+ * Each `last*At` is stamped on both the success and failure path of its
+ * operation, so the timestamp always describes the outcome reported beside it —
+ * a fresh error is never paired with an older run's timestamp.
+ */
 export function getFundingLifecycleState(): FundingLifecycleState {
   const split = getSplitStatus();
   return {
@@ -85,6 +112,8 @@ export function getFundingLifecycleState(): FundingLifecycleState {
     lastSplitError: split.lastSplitError,
     lastRescanAt,
     lastRescanError,
+    lastRefillAt,
+    lastRefillError,
   };
 }
 
@@ -112,8 +141,10 @@ export async function rescanUtxoPool(): Promise<void> {
   if (rescanInProgress) return rescanInProgress;
 
   rescanInProgress = (async () => {
-    await new Promise((r) => setTimeout(r, 1_000));
-
+    // No settle delay here: this body only *reads* the wallet, and the
+    // inter-transaction spacing a Hathor tx needs (timestamp must exceed every
+    // parent's, at 1-second fullnode granularity) belongs to the code that
+    // actually builds one — see triggerBackgroundRefill.
     logger.info({ event: "rescan.started" });
     await repopulatePoolFromWallet(getFundDeps().getGenesisWallet());
     recordRescan();
@@ -128,16 +159,18 @@ export async function rescanUtxoPool(): Promise<void> {
       },
     });
 
-    // Test bucket empty after the rescan: refill it by splitting a large output.
+    // Test bucket still empty: schedule a refill rather than awaiting one.
+    // Splitting mines a transaction (proof of work + a fullnode push), and
+    // every incoming /fund parks on `rescanInProgress` until this resolves —
+    // awaiting the split here would block all of them for the whole mining
+    // round-trip, for what is only best-effort pool repair.
     if (stats.testUtxos === 0) {
-      const reserved = await reserveLargeFromWallet(config.UTXO_SPLIT_AMOUNT * 2n);
-      if (reserved !== null) {
-        logger.info({ event: "rescan.trigger_split_after_empty_pool" });
-        await splitUtxo(reserved.utxo);
-      }
+      logger.info({ event: "rescan.trigger_split_after_empty_pool" });
+      triggerBackgroundRefill();
     }
   })().catch((err) => {
     const message = err instanceof Error ? err.message : "Unknown rescan error";
+    lastRescanAt = new Date().toISOString();
     lastRescanError = message;
     logger.error({ event: "rescan.failed", meta: { error: message } });
     throw err;
@@ -150,9 +183,49 @@ export async function rescanUtxoPool(): Promise<void> {
   }
 }
 
-/** Check whether an error indicates the UTXO was already spent externally. */
+/**
+ * Message fragments that identify "this input can no longer be spent".
+ *
+ * Two different producers reject a spent input, with different wording and
+ * neither with a distinguishing error class, so this is necessarily a message
+ * check:
+ *
+ *  - wallet-lib's local pre-flight (`checkUnspentInput`) throws a plain `Error`
+ *    reading `Output [i] of transaction [x] is already spent` — note "is
+ *    already spent", with no "been".
+ *  - the fullnode rejects the push and wallet-lib relays the node's message
+ *    verbatim (`new SendTxError(response.message)`). That wording is set by
+ *    hathor-core, not by wallet-lib, and commonly reads "has already been
+ *    spent" — so both phrasings are matched.
+ *
+ * Neither fragment is a substring of the other, so both entries are load-bearing.
+ * Matching too narrowly is the dangerous direction: an unrecognised stale error
+ * skips the rescan and falls through to the generic-failure branch, which is
+ * how a spent output gets handed back to the next request.
+ */
+const STALE_UTXO_MESSAGES = ["already spent", "already been spent"];
+
+/** Follow at most this many `cause` links; guards against a cyclic chain. */
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * Check whether an error indicates the UTXO was already spent externally.
+ *
+ * Walks the `cause` chain: both wallet-lib and this service wrap errors
+ * (`UtxoStaleError` passes `{ cause }`), so the spent-input wording is often
+ * one or more levels below the outermost message.
+ */
 function isStaleUtxoError(err: unknown): boolean {
-  return err instanceof Error && err.message.includes("already been spent");
+  let current: unknown = err;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
+    if (!(current instanceof Error)) return false;
+    const message = current.message.toLowerCase();
+    if (STALE_UTXO_MESSAGES.some((fragment) => message.includes(fragment))) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
 }
 
 /**
@@ -191,11 +264,20 @@ async function attemptFund(
     try {
       reserved = reserveUtxo(amount);
     } catch (err) {
-      // RFC: when a small-amount reservation fails because the test pool is
-      // empty AND a split is currently running, surface SPLIT_IN_PROGRESS so
-      // clients see "pool will refill shortly" rather than "exhausted, give up".
-      if (err instanceof PoolExhaustedError && isSplitInProgress()) {
-        throw new SplitInProgressError();
+      if (err instanceof PoolExhaustedError) {
+        // RFC: when a small-amount reservation fails because the test pool is
+        // empty AND a split is currently running, surface SPLIT_IN_PROGRESS so
+        // clients see "pool will refill shortly" rather than "exhausted, give
+        // up". The running split is itself the refill, so don't schedule one.
+        if (isSplitInProgress()) {
+          throw new SplitInProgressError();
+        }
+        // Otherwise nothing else will refill the pool. The success-path trigger
+        // below is unreachable while every request fails here, the bootstrap
+        // split runs once (its promise is memoized), and a rescan only happens
+        // on the stale path — so without this the pool stays at zero and every
+        // request answers POOL_EXHAUSTED forever.
+        triggerBackgroundRefill();
       }
       throw err;
     }
@@ -248,11 +330,21 @@ async function attemptFund(
         event: "fund.stale_utxo",
         meta: { txId: utxo.txId, index: utxo.index, retriesLeft },
       });
-      // Stale UTXO is not in wallet's available set anymore; release the
-      // reservation so rescan + retry can proceed without keeping a ghost
-      // entry in reservedSet.
+      // Hold the reservation *across* the rescan, then release. The stale
+      // verdict comes from the fullnode, which sees an external spend before
+      // the wallet's own UTXO store does, so `only_available_utxos` will often
+      // still report this output as available — releasing first would let
+      // populateFromUtxos re-pool a known-spent UTXO for the retry (and any
+      // concurrent request) to trip over again. Reserved keys are skipped by
+      // the rescan, so holding it is what keeps it out; releasing straight
+      // after keeps it from stranding in reservedSet.
+      //
+      // Rescan failure is swallowed for the same reason fundAddress swallows it
+      // for coalesced waiters: best-effort pool repair must not convert a
+      // retryable UTXO_STALE into a non-retryable 500. The retry still runs, and
+      // a second stale surfaces the documented UtxoStaleError below.
+      await rescanUtxoPool().catch(() => {});
       releaseReservation(utxo);
-      await rescanUtxoPool();
       return attemptFund(address, amount, retriesLeft - 1);
     }
     releaseReservation(utxo);
@@ -269,7 +361,7 @@ async function attemptFund(
     // input goes straight back to the pool for immediate reuse. A large input
     // is release-only: the pool never holds large outputs (returnChange would
     // warn and drop it), and the next wallet query rediscovers it on-chain.
-    if (utxo.amount === config.UTXO_SPLIT_AMOUNT) {
+    if (utxoSource === "test") {
       returnChange(utxo);
     }
     throw err;
@@ -290,18 +382,22 @@ async function attemptFund(
 
   scheduleReservationRelease(wallet, utxo, txId, "fund");
 
-  // Change is at output index 1 by construction: the template adds the
-  // recipient output first, then addCompleteAction appends the change output.
-  // returnChange is defensive regardless — it only re-pools an exactly
-  // test-sized output, so a non-change output slipping in is dropped, not
-  // mispooled.
-  if (tx.outputs.length > 1) {
-    const changeOutput = tx.outputs[1]!;
-    const changeAmount = BigInt(changeOutput.value);
-    if (changeAmount > 0n) {
-      returnChange({ txId, index: 1, amount: changeAmount });
-    }
-  }
+  // Genesis change is deliberately NOT re-pooled here.
+  //
+  // Telling change from the recipient's output requires knowing which address
+  // each output pays, and a built transaction carries only scripts (wallet-lib
+  // leaves `decodedScript` null until something parses it). Selecting by
+  // position instead would be unsound: `returnChange`'s guard is a *size* check,
+  // not an ownership check, and UTXO_SPLIT_AMOUNT is also the default request
+  // amount — so on a default-sized request the recipient's output is exactly
+  // test-sized and indistinguishable from change. Pooling it would hand the
+  // next request a UTXO the genesis wallet does not own, which fails as "is not
+  // from the wallet" — not a stale error, so the failure path would re-pool it
+  // again, indefinitely.
+  //
+  // The change stays on-chain in the genesis wallet and is rediscovered by the
+  // next repopulatePoolFromWallet (rescan or refill), which pools only outputs
+  // the wallet itself reports as available.
 
   if (needsRefill()) {
     triggerBackgroundRefill();
@@ -313,9 +409,14 @@ async function attemptFund(
 /**
  * Trigger a background split refill (non-blocking).
  *
- * Waits 1.5s before splitting to avoid timestamp collisions: the fullnode
- * requires tx.timestamp > parent.timestamp, and the parent is typically
- * the fund transaction that just triggered this refill.
+ * Waits {@link refillDelayMs} before splitting to avoid a timestamp collision:
+ * a Hathor transaction's timestamp must be strictly greater than every parent's,
+ * and the fullnode records timestamps at 1-second granularity — so a split whose
+ * parent is the fund tx that just triggered it can be rejected if built within
+ * the same second. The delay is the whole reason the split is deferred rather
+ * than run inline, and it is why the post-rescan refill routes through here too.
+ *
+ * Debounced: a refill already on the clock absorbs further triggers.
  */
 function triggerBackgroundRefill(): void {
   if (backgroundRefillTimer !== null) {
@@ -334,10 +435,21 @@ function triggerBackgroundRefill(): void {
         }
         return splitUtxo(reserved.utxo);
       })
+      .then(() => {
+        lastRefillAt = new Date().toISOString();
+        lastRefillError = null;
+      })
       .catch((err) => {
+        // Counted and recorded here, not left to recordSplit: a refill can fail
+        // in reserveLargeFromWallet's wallet query, before splitUtxo is ever
+        // called, and that failure would otherwise be invisible everywhere —
+        // no metric, no /status field — while the subsystem reported healthy.
         const message = err instanceof Error ? err.message : "Unknown refill error";
+        lastRefillAt = new Date().toISOString();
+        lastRefillError = message;
+        recordRefillFailure();
         logger.error({ event: "refill.failed", meta: { error: message } });
       });
-  }, 1_500);
+  }, refillDelayMs);
 }
 
