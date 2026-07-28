@@ -35,7 +35,7 @@ and PR conventions.
 
 | Method | Path              | Purpose                                            |
 | ------ | ----------------- | -------------------------------------------------- |
-| `GET`  | `/simpleWallet`   | Pop a pre-generated 24-word wallet with 22 addresses |
+| `GET`  | `/simpleWallet`   | Pop a pre-generated 24-word wallet with 22 legacy addresses and their shielded pairs |
 | `GET`  | `/multisigWallet` | Generate N-of-M multisig wallets (`participants`, `numSignatures` query params) |
 | `GET`  | `/status`         | Operator diagnostic: readiness, pool counts, genesis address, bootstrap phase |
 | `GET`  | `/ready`          | Readiness probe — `200` when ready, `503` otherwise |
@@ -119,9 +119,47 @@ test-wallet-helper:
 ## Running as a wallet provider
 
 The wallet endpoints can stand in for hathor-wallet-lib's static precalculated
-wallet pool: `/simpleWallet` returns `{ words, addresses }` plus a `retrieveTimeMs`
-latency field (and `/multisigWallet` returns `{ wallets, retrieveTimeMs }`). This
-serves wallet material only — funding stays Lib-managed.
+wallet pool: `/simpleWallet` returns `{ words, addresses, shieldedAddresses }` plus
+a `retrieveTimeMs` latency field (and `/multisigWallet` returns
+`{ wallets, retrieveTimeMs }`). This serves wallet material only — funding stays
+Lib-managed.
+
+### `shieldedAddresses`
+
+Alongside the legacy `addresses`, `/simpleWallet` returns one pre-calculated
+shielded pair per BIP32 index (same `ADDRESS_COUNT` window, indices
+`[0, ADDRESS_COUNT)`):
+
+```jsonc
+{
+  "words": "...",
+  "addresses": ["WY7...", "..."],
+  "shieldedAddresses": [
+    {
+      "bip32AddressIndex": 0,
+      "shieldedBase58": "K3LV1px...", // user-facing 71-byte shielded address
+      "spendBase58": "WSFK832...",    // on-chain P2PKH from HASH160(spend_pubkey)
+      "scanPubkey": "02bdbce...",     // compressed scan child pubkey, hex
+      "spendPubkey": "02c6872..."     // compressed spend child pubkey, hex
+    }
+  ]
+}
+```
+
+The entries are a drop-in for wallet-lib's pre-calculated shielded addresses —
+the field names mirror the Lib's `IPrecalculatedShieldedAddress`, and the type is
+aliased to it so a Lib-side rename fails this build rather than shipping a
+silently-wrong payload. Injecting them lets a wallet skip live shielded EC
+derivation at start, which is the expensive part of booting an integration
+wallet.
+
+Derivation matches the Lib exactly: scan keys come from `m/44'/280'/1'/0` and
+spend keys from `m/44'/280'/2'/0`, each derived per index with standard BIP32
+`deriveChild`. A fixed-seed test pins index 0 against wallet-lib's committed
+shielded fixture, so the two repos cannot drift apart unnoticed.
+
+The field is optional in the response type for consumers pinned to a wallet-lib
+without shielded support; this service always populates it.
 
 ```sh
 docker build -t hathor-ith .

@@ -1,8 +1,8 @@
 diff --git a/lib/utils/bigint.js b/lib/utils/bigint.js
-index 312d9fb1f6fbaaa16ed741453bfc8d772cec946a..fb2574035c70c72477c9fd92bf305b0dca35199d 100644
+index eeb7f4a95a0017693e0b1b2656a133b6a85f41b4..b2ef591a08eaa58f1d46df4a36db6c9caadac3f4 100644
 --- a/lib/utils/bigint.js
 +++ b/lib/utils/bigint.js
-@@ -47,7 +47,7 @@ const JSONBigInt = exports.JSONBigInt = {
+@@ -50,7 +50,7 @@ const JSONBigInt = exports.JSONBigInt = {
        // Otherwise, we can keep it as a Number.
        return value;
      } catch (e) {
