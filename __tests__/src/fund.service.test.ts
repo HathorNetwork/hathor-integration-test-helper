@@ -203,12 +203,14 @@ describe("the fund path does not re-pool change", () => {
     expect(getReservedKeys()).toHaveLength(0);
   });
 
-  test("a single-output tx leaves the pool unchanged", async () => {
+  test("a single-output tx adds nothing back to the pool", async () => {
     populateFromUtxos([{ txId: "seed", index: 0, value: 1000n }]);
     installOutputDeps([{ value: 1000n }], "fund-tx");
 
     await fundAddress(GENESIS, 1000n);
 
+    // The reserved input is consumed and there is no second output to mistake
+    // for change, so the pool ends empty rather than one entry richer.
     expect(getPoolStats().testUtxos).toBe(0);
     expect(getReservedKeys()).toHaveLength(0);
   });
