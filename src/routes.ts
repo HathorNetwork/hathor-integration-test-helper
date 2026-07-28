@@ -7,7 +7,7 @@ import { parseFundBody } from "./parse-fund-body";
 import { fundAddress, getFundingLifecycleState } from "./fund.service";
 import { getStartupState } from "./startup";
 import { config } from "./config";
-import { jsonError, jsonErrorFromService } from "./http";
+import { jsonErrorFromCode, jsonErrorFromService } from "./http";
 import { logger } from "./logger";
 import { getMetricsSnapshot, recordFundSuccess } from "./metrics";
 import { InvalidRequestError, ServiceError, ServiceNotReadyError } from "./errors";
@@ -320,11 +320,14 @@ let fundSeq = 0;
 /**
  * POST /fund — reserve a UTXO and send funds to the requested address.
  *
- * 503 SERVICE_NOT_READY until genesis has synced; 400/413 INVALID_REQUEST for
- * a malformed body; on success 200 with `{txId, amount, utxoSource}`. Domain
- * failures (`POOL_EXHAUSTED`, `SPLIT_IN_PROGRESS`, `UTXO_STALE`,
- * `FUND_TIMEOUT`) arrive as {@link ServiceError}s and are mapped to their RFC
- * response via {@link jsonErrorFromService}; anything else is a 500.
+ * 400 INVALID_REQUEST when funding is disabled entirely (`FUNDING_ENABLED=
+ * false`) — see below for why that is not a 503; 503 SERVICE_NOT_READY until
+ * genesis has synced or while the bootstrap is degraded; 400/413
+ * INVALID_REQUEST for a malformed body; on success 200 with
+ * `{txId, amount, utxoSource}`. Domain failures (`POOL_EXHAUSTED`,
+ * `SPLIT_IN_PROGRESS`, `UTXO_STALE`, `FUND_TIMEOUT`) arrive as
+ * {@link ServiceError}s and are mapped to their RFC response via
+ * {@link jsonErrorFromService}; anything else is a 500.
  */
 export async function handleFund(req: Request): Promise<Response> {
   if (!config.FUNDING_ENABLED) {
@@ -340,6 +343,17 @@ export async function handleFund(req: Request): Promise<Response> {
   }
   if (!routeGenesis.ready()) {
     return jsonErrorFromService(new ServiceNotReadyError());
+  }
+  // Genesis being live is not the same as the service being able to fund.
+  // A degraded bootstrap has given up refilling the pool, so accepting work
+  // here would answer POOL_EXHAUSTED (retryable: true) forever over a pool
+  // nothing will ever refill, while /ready reports 503 for the same instant.
+  // Report the same 503 the readiness probe does — it stays retryable because
+  // an operator restart genuinely clears it, unlike FUNDING_ENABLED=false.
+  if (getStartupState().phase === "degraded") {
+    return jsonErrorFromService(
+      new ServiceNotReadyError("funding subsystem is degraded"),
+    );
   }
 
   const parsed = await parseFundBody(req);
@@ -375,11 +389,17 @@ export async function handleFund(req: Request): Promise<Response> {
     // The raw failure message is surfaced (not a generic string) deliberately:
     // this is an integration-test helper consumed by trusted CI harnesses,
     // where the real detail is exactly what a test author needs to debug. It is
-    // also logged for operators. This is not a public, untrusted-facing API, so
-    // the usual "don't leak internals" guard would only hide useful signal.
+    // also logged for operators.
+    //
+    // This assumes a trusted-network deployment — the service has no
+    // authentication layer, so anyone who can reach /fund can already spend the
+    // genesis wallet. Note the scope: only throws from fundAddress reach here.
+    // parseFundBody runs outside this try, so a throw there is caught by
+    // withObservability (app.ts) and answered with a generic "Internal Server
+    // Error" instead.
     const message = err instanceof Error ? err.message : "Unknown error";
     logger.error({ event: "fund.failed", meta: { error: message } });
-    return jsonError(500, "INTERNAL_ERROR", message, false);
+    return jsonErrorFromCode("INTERNAL_ERROR", message);
   }
 }
 

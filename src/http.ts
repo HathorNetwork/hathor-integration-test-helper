@@ -1,4 +1,4 @@
-import type { ErrorCode, ServiceError } from "./errors";
+import { errorDescriptor, type ErrorCode, type ServiceError } from "./errors";
 
 /**
  * Standard error body, as defined by the RFC's "Error response schema":
@@ -42,6 +42,26 @@ export function jsonError(
 export function jsonErrorFromService(err: ServiceError): Response {
   const { code, status, retryable } = err.descriptor;
   return jsonError(status, code, err.message, retryable);
+}
+
+/**
+ * Build the RFC error response for `code`, taking status and `retryable`
+ * from the error table rather than from the caller.
+ *
+ * Use this wherever there is no {@link ServiceError} to hand — a handler that
+ * has only a code, or a path that must emit a status the code is not pinned to.
+ * `statusOverride` covers exactly that second case: INVALID_REQUEST is pinned to
+ * 400, but an oversized body is the same code at 413. Only the status is
+ * overridable; `retryable` always comes from the table, so the flag clients key
+ * their retry loops on cannot drift per call site.
+ */
+export function jsonErrorFromCode(
+  code: ErrorCode,
+  message: string,
+  statusOverride?: number,
+): Response {
+  const { status, retryable } = errorDescriptor(code);
+  return jsonError(statusOverride ?? status, code, message, retryable);
 }
 
 /**

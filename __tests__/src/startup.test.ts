@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import {
   bootstrapFunding,
   getStartupState,
@@ -35,6 +35,14 @@ function deps(overrides: Partial<BootstrapDeps> = {}): BootstrapDeps {
 beforeEach(() => {
   initCalls = 0;
   splitCalls = 0;
+  __resetStartupForTest();
+});
+
+// bun:test runs every unit file in one process, so the last scenario's phase
+// would otherwise persist into later files. Several of those read startup state
+// for real — /fund refuses to serve while the phase is `degraded` — so a leaked
+// `degraded` silently rewrites their expected responses.
+afterAll(() => {
   __resetStartupForTest();
 });
 
