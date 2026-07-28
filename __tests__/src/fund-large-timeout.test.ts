@@ -146,9 +146,9 @@ describe("reserveLargeWithTimeout", () => {
       runSendTransaction: async () => {},
     });
 
-    // Drive the real mapping in fund.service rather than asserting on a
-    // hand-built FundTimeoutError: this is what /fund answers, and deleting the
-    // throw would otherwise leave a 500 in place of the documented 409.
+    // Drives the real mapping in fund.service, so this asserts what /fund
+    // itself answers: without that throw the endpoint returns 500 in place of
+    // the documented 409.
     const err = await fundAddress(genesisAddress, 30000n, 0).then(
       () => null,
       (e: unknown) => e,

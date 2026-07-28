@@ -22,16 +22,16 @@ import {
 } from "../../src/split.service";
 
 /**
- * Cover for the refill trigger and the timer body it schedules.
+ * Cover for the refill triggers and the timer body they schedule.
  *
- * The only refill trigger used to sit on the fund success path, so a pool that
- * reached zero could never recover: every request failed at the reservation,
- * the trigger was never reached, and the bootstrap's split runs once. These
- * tests drive the exhausted path directly.
+ * A pool at zero has to recover on its own. The success-path trigger cannot do
+ * it — while the pool is empty every request fails at the reservation and never
+ * reaches that trigger — and the bootstrap split runs once, so the exhausted
+ * path must schedule its own refill. These tests drive that path directly.
  *
- * The 1.5s production delay is collapsed to ~0 via __setRefillDelayForTest —
- * at its real value the timer body never runs before a test's cleanup clears
- * it, which is why this code path had no coverage at all.
+ * The 1.5s production delay is collapsed to ~0 via __setRefillDelayForTest: at
+ * its real value the timer outlives the test that scheduled it and cleanup
+ * clears it before the body can run.
  */
 const GENESIS = "WjS6pizxsgNQypgYvGQ8jDB9JMS4P9nVgk";
 
@@ -145,6 +145,36 @@ describe("a drained pool schedules its own refill", () => {
     const lifecycle = getFundingLifecycleState();
     expect(lifecycle.lastRefillError).toBe("wallet unreachable");
     expect(lifecycle.lastRefillAt).not.toBeNull();
+  });
+
+  test("a refill with no large output to split does not report success", async () => {
+    // The wallet holds nothing big enough to split, so the pool cannot refill.
+    // That must not read as a completed refill on /status: a pool stuck at zero
+    // because genesis has no large output is precisely what an operator needs
+    // to see, and it is indistinguishable from a healthy idle refill otherwise.
+    __setFundDepsForTest({
+      getGenesisWallet: () =>
+        ({
+          async getUtxos() {
+            return { utxos: [] };
+          },
+        }) as unknown as FundWallet,
+      getGenesisAddress: () => GENESIS,
+      newTemplateBuilder: fakeBuilder,
+      runSendTransaction: async () => {},
+    });
+
+    populateFromUtxos([]);
+    await expect(fundAddress(GENESIS, 500n)).rejects.toBeInstanceOf(
+      PoolExhaustedError,
+    );
+    await drainTimers();
+
+    expect(getPoolStats().testUtxos).toBe(0);
+    const lifecycle = getFundingLifecycleState();
+    expect(lifecycle.lastRefillError).not.toBeNull();
+    expect(lifecycle.lastRefillError).toContain("no large output");
+    expect(getMetricsSnapshot().refillFailures).toBe(1);
   });
 
   test("a successful fund below the threshold schedules a refill", async () => {

@@ -141,10 +141,10 @@ export async function rescanUtxoPool(): Promise<void> {
   if (rescanInProgress) return rescanInProgress;
 
   rescanInProgress = (async () => {
-    // No settle delay here: this body only *reads* the wallet, and the
-    // inter-transaction spacing a Hathor tx needs (timestamp must exceed every
-    // parent's, at 1-second fullnode granularity) belongs to the code that
-    // actually builds one — see triggerBackgroundRefill.
+    // Runs straight through: this body only *reads* the wallet, and every
+    // /fund request parks on it. The inter-transaction spacing a Hathor tx needs
+    // (timestamp must exceed every parent's, at 1-second fullnode granularity)
+    // belongs to the code that builds one — see triggerBackgroundRefill.
     logger.info({ event: "rescan.started" });
     await repopulatePoolFromWallet(getFundDeps().getGenesisWallet());
     recordRescan();
@@ -433,30 +433,37 @@ function triggerBackgroundRefill(): void {
   backgroundRefillTimer = setTimeout(() => {
     backgroundRefillTimer = null;
 
-    // Require at least 2 × UTXO_SPLIT_AMOUNT so the split yields at least one
-    // test UTXO plus change; skip quietly when the wallet has nothing that large.
-    reserveLargeFromWallet(config.UTXO_SPLIT_AMOUNT * 2n)
-      .then((reserved) => {
+    void (async () => {
+      try {
+        // Require at least 2 × UTXO_SPLIT_AMOUNT so the split yields at least
+        // one test UTXO plus change.
+        const reserved = await reserveLargeFromWallet(config.UTXO_SPLIT_AMOUNT * 2n);
         if (reserved === null) {
+          // The wallet holds nothing large enough to split, so the pool cannot
+          // refill. Recorded as a failed refill rather than passed over: a pool
+          // stuck at zero because genesis has no splittable output is exactly
+          // what an operator needs to see, and reporting it as a completed
+          // refill would make it indistinguishable from a healthy one.
+          recordRefillFailure();
+          lastRefillAt = new Date().toISOString();
+          lastRefillError = "no large output available to split";
+          logger.warn({ event: "refill.no_candidate" });
           return;
         }
-        return splitUtxo(reserved.utxo);
-      })
-      .then(() => {
+        await splitUtxo(reserved.utxo);
         lastRefillAt = new Date().toISOString();
         lastRefillError = null;
-      })
-      .catch((err) => {
-        // Counted and recorded here, not left to recordSplit: a refill can fail
-        // in reserveLargeFromWallet's wallet query, before splitUtxo is ever
-        // called, and that failure would otherwise be invisible everywhere —
-        // no metric, no /status field — while the subsystem reported healthy.
+      } catch (err) {
+        // Counted here, not left to recordSplit: a refill can fail in
+        // reserveLargeFromWallet's wallet query, before splitUtxo is ever
+        // called, and that failure reaches no split counter at all.
         const message = err instanceof Error ? err.message : "Unknown refill error";
+        recordRefillFailure();
         lastRefillAt = new Date().toISOString();
         lastRefillError = message;
-        recordRefillFailure();
         logger.error({ event: "refill.failed", meta: { error: message } });
-      });
+      }
+    })();
   }, refillDelayMs);
 }
 

@@ -73,12 +73,19 @@ Error body (all failures): `{ "error": <code>, "message": <text>, "retryable": <
 
 #### Cost model
 
-Every `/fund` request consumes exactly **one** pool UTXO of
-`UTXO_SPLIT_AMOUNT`, regardless of the `amount` requested. The pool holds
-only exactly-`UTXO_SPLIT_AMOUNT` outputs, and the change from a
-smaller request falls below that size, so it is neither re-pooled nor
-recoverable by the pool afterwards — it stays on-chain in the genesis
-wallet, where only a wallet-sourced *large* reservation could reach it.
+Which source serves a request depends on `amount`, and the response says
+which one did via `utxoSource`:
+
+| Request                          | `utxoSource` | Cost                                    |
+| -------------------------------- | ------------ | --------------------------------------- |
+| `amount <= UTXO_SPLIT_AMOUNT`    | `test`       | Exactly **one** pool UTXO, whatever the amount |
+| `amount > UTXO_SPLIT_AMOUNT`     | `large`      | **No** pool UTXO — sourced live from the genesis wallet |
+
+For `test` requests the pool holds only exactly-`UTXO_SPLIT_AMOUNT`
+outputs, so the change from a smaller request falls below that size and is
+neither re-pooled nor recoverable by the pool afterwards — it stays
+on-chain in the genesis wallet, where only a wallet-sourced `large`
+reservation could reach it.
 
 The practical consequence: a suite issuing many small requests drains the
 pool at the same rate as one issuing full-sized ones, and the difference
@@ -88,6 +95,10 @@ genesis wallet rather than recycled. With the default
 pool UTXOs and leave 199,800 units parked outside the pool. Prefer
 omitting `amount` (which defaults to `UTXO_SPLIT_AMOUNT`) unless a test
 specifically needs a different value.
+
+`large` requests never draw on the pool, so they cannot exhaust it — they
+compete instead for the genesis wallet's large outputs, and wait up to
+`FUND_TIMEOUT_MS` for one before returning `409 FUND_TIMEOUT`.
 
 ### `GET /metrics`
 

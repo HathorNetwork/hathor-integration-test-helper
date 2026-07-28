@@ -87,7 +87,11 @@ beforeEach(() => {
 
 afterEach(() => {
   // Restore shared singletons so later files (routes-readiness) see a
-  // not-ready genesis + empty pool.
+  // not-ready genesis + empty pool. The startup phase is a process global that
+  // outlives this file, and the degraded test forces it — clearing it in
+  // beforeEach alone would still leak the last test's phase to whichever file
+  // Bun runs next.
+  __resetStartupForTest();
   __resetFundDepsForTest();
   __resetFundStateForTest();
   for (const key of getReservedKeys()) {
@@ -190,9 +194,8 @@ describe("GET /metrics", () => {
   });
 
   test("a successful fund increments fundCount by exactly one", async () => {
-    // Read the counter back rather than asserting its type: `fundCount` is a
-    // number initialised to 0, so a type assertion cannot fail for any
-    // regression that drops the recordFundSuccess() call entirely.
+    // Asserts the delta, not the type: `fundCount` is a number initialised to
+    // 0, so only a before/after comparison shows the handler actually recorded.
     const before = getMetricsSnapshot().fundCount;
 
     const res = await handleFund(fundRequest({ address: validAddress, amount: 500 }));

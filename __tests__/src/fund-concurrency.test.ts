@@ -31,10 +31,9 @@ import {
  * belongs to the split — whose parent is the fund tx that triggered its refill
  * — and must never sit on the request path.
  *
- * This is a guard against reintroducing a delay there. It has previously been
- * got wrong in a way unit tests did not catch: a 1s sleep at the head of
- * `rescanUtxoPool`, which every incoming request parks on, turned one stale
- * UTXO into a seconds-long stall for every concurrent caller.
+ * The trap these tests guard: `fundAddress` parks every incoming request on an
+ * in-flight rescan, so a delay anywhere inside `rescanUtxoPool` is paid by every
+ * concurrent caller, not only by the one whose UTXO went stale.
  */
 const GENESIS = "WjS6pizxsgNQypgYvGQ8jDB9JMS4P9nVgk";
 

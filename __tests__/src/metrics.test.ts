@@ -4,6 +4,7 @@ import {
   recordFundSuccess,
   recordSplit,
   recordRescan,
+  recordRefillFailure,
   getMetricsSnapshot,
   __resetMetricsForTest,
 } from "../../src/metrics";
@@ -34,10 +35,27 @@ describe("metrics", () => {
     expect(snap.staleUtxoRescans).toBe(1);
   });
 
-  test("__resetMetricsForTest zeroes the fund counters", () => {
+  test("__resetMetricsForTest zeroes every funding counter", () => {
+    // Every counter, not just fundCount: the whole funding suite leans on this
+    // reset in beforeEach, so a counter that silently survives it would leak
+    // across files and skew whichever assertion reads it next.
     recordFundSuccess();
+    recordSplit(true);
+    recordSplit(false);
+    recordRescan();
+    recordRefillFailure();
+    recordHttpRequest("/x", 200, 10);
+
     __resetMetricsForTest();
-    expect(getMetricsSnapshot().fundCount).toBe(0);
+
+    expect(getMetricsSnapshot()).toEqual({
+      routes: {},
+      fundCount: 0,
+      staleUtxoRescans: 0,
+      splitCount: 0,
+      splitFailures: 0,
+      refillFailures: 0,
+    });
   });
 
   test("counts requests and averages latency to 2 decimals", () => {

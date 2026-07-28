@@ -105,8 +105,8 @@ describe("fund.service typed errors", () => {
     populateFromUtxos([{ txId: "stale-utxo", index: 0, value: 1000n }]);
 
     const result = await fundAddress(genesisAddress, 500n);
-    // toBe, not toMatch(/^tx-/): both tx-1 and tx-2 match that pattern, so it
-    // would pass even if the retry never happened.
+    // The exact id, not a prefix: tx-1 and tx-2 share one, so only an equality
+    // check distinguishes the retry's result from the first attempt's.
     expect(result.txId).toBe("tx-2");
     expect(sendAttempts).toBe(2);
   });

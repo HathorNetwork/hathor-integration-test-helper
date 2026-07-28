@@ -16,17 +16,20 @@ import {
 } from "../../src/split.service";
 
 /**
- * Regression cover for the stale-UTXO classifier.
+ * Cover for the stale-UTXO classifier's message matching.
  *
- * The classifier previously tested for "already been spent", which wallet-lib
- * never emits — every message below is quoted from the library rather than
- * invented, so a future edit to the predicate that stops matching real
- * wallet-lib output fails here instead of silently disabling stale recovery.
+ * Two producers reject a spent input, with different wording and neither with a
+ * distinguishing error class:
+ *  - wallet-lib's local pre-flight `checkUnspentInput`, re-thrown as
+ *    `Token: ${token}. ${message}`. It reads "is already spent" — no "been"
+ *    (sendTransaction.js:1305,1442).
+ *  - the fullnode, whose message wallet-lib relays verbatim inside SendTxError.
+ *    That wording is hathor-core's, not wallet-lib's, and "has already been
+ *    spent" is the phrasing the classifier covers for it.
  *
- * Two producers reject a spent input, with different wording:
- *  - the local pre-flight `checkUnspentInput`, whose message is re-thrown as
- *    `Token: ${token}. ${message}` (sendTransaction.js:1305,1442)
- *  - the fullnode, whose message wallet-lib relays verbatim inside SendTxError
+ * Neither fragment contains the other, so both are load-bearing: dropping either
+ * silently disables recovery for that one producer. The fixtures below pin the
+ * exact strings so a predicate edit fails here rather than in production.
  */
 const GENESIS = "WjS6pizxsgNQypgYvGQ8jDB9JMS4P9nVgk";
 
