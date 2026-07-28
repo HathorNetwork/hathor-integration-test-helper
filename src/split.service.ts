@@ -353,6 +353,9 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
     // below it throws — so releasing here never races the observation path.
     releaseReservation(utxo);
     const message = err instanceof Error ? err.message : "Unknown split error";
+    // Stamped on the failure path too, so /status never shows this error beside
+    // the *previous* split's timestamp.
+    lastSplitAt = new Date().toISOString();
     lastSplitError = message;
     recordSplit(false);
     logger.error({ event: "split.failed", meta: { error: message } });

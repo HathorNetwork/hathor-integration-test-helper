@@ -11,6 +11,7 @@ import {
 import { __resetFundStateForTest } from "../../src/fund.service";
 import {
   splitUtxo,
+  getSplitStatus,
   __setFundDepsForTest,
   __resetFundDepsForTest,
   type FundTemplateBuilder,
@@ -172,6 +173,21 @@ describe("splitUtxo", () => {
 
     // Left reserved, the large output stays wedged in reservedSet forever.
     expect(getReservedKeys()).toEqual([]);
+  });
+
+  test("a failed split stamps its timestamp alongside the error", async () => {
+    // Same contract as the rescan's: /status must never report a fresh
+    // lastSplitError beside the previous *successful* split's timestamp.
+    expect(getSplitStatus().lastSplitAt).toBeNull();
+
+    lastSendError = new Error("mining failed");
+    await expect(
+      splitUtxo({ txId: "fail", index: 0, amount: 100000n }),
+    ).rejects.toThrow("mining failed");
+
+    const status = getSplitStatus();
+    expect(status.lastSplitError).toBe("mining failed");
+    expect(status.lastSplitAt).not.toBeNull();
   });
 
   test("releases the reserved input when dropped as dust", async () => {
