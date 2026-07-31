@@ -1,7 +1,11 @@
 # Docker configuration (override via environment: DOCKER_REGISTRY, DOCKER_TAG)
 IMAGE_NAME := hathor-integration-test-helper
 REGISTRY := $(or $(DOCKER_REGISTRY),docker.io/hathor)
-TAG := $(or $(DOCKER_TAG),$(shell git rev-parse --short HEAD 2>/dev/null),latest)
+# package.json is the source of truth for the version, so a local build
+# carries the same tag the publish workflow would produce for this commit.
+# Override with DOCKER_TAG for throwaway builds.
+VERSION := $(shell bun --print "require('./package.json').version" 2>/dev/null)
+TAG := $(or $(DOCKER_TAG),$(VERSION),latest)
 
 # Help target (default)
 .PHONY: help
