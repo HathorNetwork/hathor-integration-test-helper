@@ -58,6 +58,31 @@ Conventional Commits format:
 - Body: wrap lines at 72 characters
 - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
+## Releases
+
+**Never create or push a `v*` tag without an explicit human request for
+that specific release.** Pushing a `vMAJOR.MINOR.PATCH` tag triggers
+[`.github/workflows/docker.yml`](.github/workflows/docker.yml), which
+publishes `hathornetwork/hathor-integration-test-helper:<version>` and
+moves `:latest` on DockerHub. That is public and irreversible — a
+published image can only be superseded, never unpublished.
+
+`package.json` is the source of truth for the published version. The
+workflow refuses to publish unless the pushed tag matches it exactly,
+so a release is two steps: merge the `version` bump, then tag that
+merged commit. Bumping the version is ordinary work; the *tag* is the
+release. Agents prepare the tag command and hand it over — a human runs
+it.
+
+Published versions are immutable. The workflow also refuses to publish
+a version that already exists on DockerHub, so re-releasing is never an
+option — the only way forward is a bump.
+
+`.claude/settings.json` denies the tagging commands as a backstop, not
+as a hard boundary — patterns cannot reliably see through compound
+commands. It also denies read-only `git tag -l`; list tags with
+`git for-each-ref refs/tags` or `git ls-remote --tags origin` instead.
+
 ## Review rules
 
 PR review conventions live in [`docs/review-rules/`](docs/review-rules/)
