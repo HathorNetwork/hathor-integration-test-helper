@@ -1,7 +1,10 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import {
   recordHttpRequest,
+  recordFundSuccess,
   recordSplit,
+  recordRescan,
+  recordRefillFailure,
   getMetricsSnapshot,
   __resetMetricsForTest,
 } from "../../src/metrics";
@@ -12,17 +15,47 @@ describe("metrics", () => {
   test("empty snapshot has empty routes map and zeroed counters", () => {
     expect(getMetricsSnapshot()).toEqual({
       routes: {},
+      fundCount: 0,
+      staleUtxoRescans: 0,
       splitCount: 0,
       splitFailures: 0,
+      refillFailures: 0,
     });
   });
 
-  test("split counters appear in the snapshot", () => {
+  test("fund/split/rescan counters appear in the snapshot", () => {
+    recordFundSuccess();
     recordSplit(true);
     recordSplit(false);
+    recordRescan();
     const snap = getMetricsSnapshot();
+    expect(snap.fundCount).toBe(1);
     expect(snap.splitCount).toBe(1);
     expect(snap.splitFailures).toBe(1);
+    expect(snap.staleUtxoRescans).toBe(1);
+  });
+
+  test("__resetMetricsForTest zeroes every funding counter", () => {
+    // Every counter, not just fundCount: the whole funding suite leans on this
+    // reset in beforeEach, so a counter that silently survives it would leak
+    // across files and skew whichever assertion reads it next.
+    recordFundSuccess();
+    recordSplit(true);
+    recordSplit(false);
+    recordRescan();
+    recordRefillFailure();
+    recordHttpRequest("/x", 200, 10);
+
+    __resetMetricsForTest();
+
+    expect(getMetricsSnapshot()).toEqual({
+      routes: {},
+      fundCount: 0,
+      staleUtxoRescans: 0,
+      splitCount: 0,
+      splitFailures: 0,
+      refillFailures: 0,
+    });
   });
 
   test("counts requests and averages latency to 2 decimals", () => {

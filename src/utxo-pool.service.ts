@@ -57,10 +57,17 @@ export interface Utxo {
 /** Which pool source a reserved UTXO was drawn from. */
 export type UtxoSource = "test" | "large";
 
-/** A UTXO reserved for a funding transaction, tagged with its source. */
+/**
+ * A UTXO reserved for a funding transaction, tagged with its source.
+ *
+ * Both fields are `readonly` for the same reason {@link Utxo}'s are: swapping
+ * `utxo` after the reservation is taken would leave the original key in
+ * `reservedSet` with nothing left holding a handle to release it — permanently
+ * reserved, and skipped by every rescan and admit thereafter.
+ */
 export interface ReservedUtxo {
-  utxo: Utxo;
-  source: UtxoSource;
+  readonly utxo: Utxo;
+  readonly source: UtxoSource;
 }
 
 /** Point-in-time counts the readiness/status routes report. */

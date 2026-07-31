@@ -42,6 +42,17 @@ export interface ErrorDescriptor {
   readonly retryable: boolean;
 }
 
+/**
+ * The wire contract pinned to `code`.
+ *
+ * Exported so the response writers can read the table instead of
+ * hand-transcribing a row's status and retryable flag at each call site —
+ * transcriptions that match today and nothing keeps matching.
+ */
+export function errorDescriptor(code: ErrorCode): ErrorDescriptor {
+  return { code, ...ERROR_TABLE[code] };
+}
+
 /** Base class for any failure intended to surface as a structured RFC error. */
 export class ServiceError extends Error {
   public readonly descriptor: ErrorDescriptor;

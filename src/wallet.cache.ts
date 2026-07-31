@@ -24,6 +24,18 @@ const simpleWalletCache: SimpleWallet[] = [];
 let isRefilling = false;
 let generator: () => SimpleWallet = defaultGenerator;
 
+/**
+ * Invalidation token for in-flight refill chains.
+ *
+ * A refill is a self-rescheduling `setImmediate` chain, so clearing `isRefilling`
+ * does not stop one that is already queued — the pending closure still runs and
+ * still calls `generator()`. Swapping the generator or emptying the cache out
+ * from under a live chain therefore lets it keep filling, with whichever
+ * generator is installed by the time it wakes. Each chain captures the epoch it
+ * started in and stops as soon as that no longer matches.
+ */
+let cacheEpoch = 0;
+
 function fillCacheSync(): void {
   while (simpleWalletCache.length < config.SIMPLE_WALLET_CACHE_SIZE) {
     simpleWalletCache.push(generator());
@@ -39,8 +51,12 @@ function refillCacheAsync(): void {
   // can start a fresh cycle. Without this flag, a persistently
   // failing generator would spin-loop via setImmediate.
   let retryUsed = false;
+  const epoch = cacheEpoch;
 
   const refillOne = () => {
+    // A reset or generator swap happened after this chain was queued; abandon
+    // it rather than generate into a cache that is no longer this chain's.
+    if (epoch !== cacheEpoch) return;
     if (simpleWalletCache.length >= config.SIMPLE_WALLET_CACHE_SIZE) {
       isRefilling = false;
       return;
@@ -120,11 +136,22 @@ export function initializeCache(): void {
 export function __setGeneratorForTest(
   fn: (() => SimpleWallet) | null,
 ): void {
+  // Invalidate live refill chains: a chain queued under the previous generator
+  // would otherwise wake up and generate with this one. Restoring the real
+  // generator is the costly direction — an orphaned chain then refills the whole
+  // cache with real BIP39 seeds, blocking the loop for hundreds of ms inside
+  // whatever test happens to run next.
+  cacheEpoch += 1;
+  isRefilling = false;
   generator = fn ?? defaultGenerator;
 }
 
-/** Test-only: drop all cached wallets and clear the refill flag. */
+/**
+ * Test-only: drop all cached wallets and stop any in-flight refill, so a
+ * background chain from a previous test cannot repopulate the cache afterwards.
+ */
 export function __resetCacheForTest(): void {
+  cacheEpoch += 1;
   simpleWalletCache.length = 0;
   isRefilling = false;
 }

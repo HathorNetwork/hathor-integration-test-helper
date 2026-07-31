@@ -37,12 +37,81 @@ and PR conventions.
 | ------ | ----------------- | -------------------------------------------------- |
 | `GET`  | `/simpleWallet`   | Pop a pre-generated 24-word wallet with 22 legacy addresses and their shielded pairs |
 | `GET`  | `/multisigWallet` | Generate N-of-M multisig wallets (`participants`, `numSignatures` query params) |
-| `GET`  | `/status`         | Operator diagnostic: readiness, pool counts, genesis address, bootstrap phase |
+| `GET`  | `/status`         | Operator diagnostic: readiness, pool counts, genesis address, bootstrap phase, funding lifecycle |
 | `GET`  | `/ready`          | Readiness probe — `200` when ready, `503` otherwise |
 | `GET`  | `/live`           | Liveness probe — always `200`                      |
+| `POST` | `/fund`           | Reserve a pool UTXO and send funds to an address   |
+| `GET`  | `/metrics`        | JSON snapshot of per-route and funding counters    |
 
-`/fund` and `/metrics` arrive with the funding milestone. A canonical
-OpenAPI document lands with the project-docs PR.
+A canonical OpenAPI document lands with the project-docs PR.
+
+### `POST /fund`
+
+Request body (`application/json`):
+
+| Field     | Required | Type            | Meaning                                          |
+| --------- | -------- | --------------- | ------------------------------------------------ |
+| `address` | yes      | string          | Destination Hathor address (validated for the configured network) |
+| `amount`  | no       | number \| digit-string | Amount in the smallest unit; defaults to `UTXO_SPLIT_AMOUNT`. Use a digit-only string for values beyond the JS safe-integer range |
+
+Success (`200`): `{ "txId": "...", "amount": 1000, "utxoSource": "test" \| "large" }`.
+
+Error body (all failures): `{ "error": <code>, "message": <text>, "retryable": <bool> }`.
+
+| Status | `error`             | `retryable` | When                                             |
+| ------ | ------------------- | ----------- | ------------------------------------------------ |
+| `400`  | `INVALID_REQUEST`   | `false`     | Malformed body, bad address, or bad amount       |
+| `400`  | `INVALID_REQUEST`   | `false`     | Funding is disabled (`FUNDING_ENABLED=false`) — deliberately *not* retryable, since this deployment can never fund |
+| `404`  | `INVALID_REQUEST`   | `false`     | Unknown path, or a known path called with an unsupported method (e.g. `GET /fund`) |
+| `413`  | `INVALID_REQUEST`   | `false`     | Body exceeds `MAX_REQUEST_BODY_BYTES`            |
+| `503`  | `SERVICE_NOT_READY` | `true`      | Genesis wallet has not synced yet, or the funding bootstrap is `degraded` |
+| `409`  | `POOL_EXHAUSTED`    | `true`      | No UTXO available for the requested amount        |
+| `409`  | `SPLIT_IN_PROGRESS` | `true`      | Test pool empty while a refill split runs; retry shortly |
+| `409`  | `FUND_TIMEOUT`      | `true`      | Timed out waiting for a large UTXO               |
+| `409`  | `UTXO_STALE`        | `true`      | Reserved UTXO was spent externally; rescan ran   |
+| `500`  | `INTERNAL_ERROR`    | `false`     | Unexpected failure                               |
+
+#### Cost model
+
+Which source serves a request depends on `amount`, and the response says
+which one did via `utxoSource`:
+
+| Request                          | `utxoSource` | Cost                                    |
+| -------------------------------- | ------------ | --------------------------------------- |
+| `amount <= UTXO_SPLIT_AMOUNT`    | `test`       | Exactly **one** pool UTXO, whatever the amount |
+| `amount > UTXO_SPLIT_AMOUNT`     | `large`      | **No** pool UTXO — sourced live from the genesis wallet |
+
+For `test` requests the pool holds only exactly-`UTXO_SPLIT_AMOUNT`
+outputs, so the change from a smaller request falls below that size and is
+neither re-pooled nor recoverable by the pool afterwards — it stays
+on-chain in the genesis wallet, where only a wallet-sourced `large`
+reservation could reach it.
+
+The practical consequence: a suite issuing many small requests drains the
+pool at the same rate as one issuing full-sized ones, and the difference
+between the requested amount and `UTXO_SPLIT_AMOUNT` is retained by the
+genesis wallet rather than recycled. With the default
+`UTXO_SPLIT_AMOUNT=1000`, 200 requests for `{"amount": 1}` consume 200
+pool UTXOs and leave 199,800 units parked outside the pool. Prefer
+omitting `amount` (which defaults to `UTXO_SPLIT_AMOUNT`) unless a test
+specifically needs a different value.
+
+`large` requests never draw on the pool, so they cannot exhaust it — they
+compete instead for the genesis wallet's large outputs, and wait up to
+`FUND_TIMEOUT_MS` for one before returning `409 FUND_TIMEOUT`.
+
+### `GET /metrics`
+
+`{ "routes": { "<path>": { requests, errors, avgLatencyMs } }, ... }` plus
+the funding counters:
+
+| Counter            | Meaning                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| `fundCount`        | Successful `/fund` transactions                            |
+| `staleUtxoRescans` | Completed pool rescans (a stale UTXO is the only trigger today) |
+| `splitCount`       | Successful UTXO splits                                     |
+| `splitFailures`    | Splits that threw                                          |
+| `refillFailures`   | Background refills that failed, including those that failed in the wallet query *before* reaching the split — those never reach `splitFailures` |
 
 ### Readiness semantics
 
@@ -57,10 +126,28 @@ OpenAPI document lands with the project-docs PR.
 | `funds_query_error`          | `false` | Genesis ready, but the wallet funds query failed — funding state is unknown |
 | `ready`                      | `true`  | Genesis ready and the wallet holds spendable UTXOs |
 
+Readiness is decoupled from the test pool: it gates on whether the
+genesis *wallet* holds spendable UTXOs (a single `getUtxos` check), so
+`/ready` reaches `200 ready` as soon as genesis syncs to a funded
+wallet — even before the first split has refilled the test pool.
+
 `/status` additionally reports a `startup.phase` of `idle`,
-`initializing`, `ready`, `disabled`, or `degraded`. A bad seed or an
+`initializing`, `ready`, `disabled`, or `degraded`, plus a `funding`
+block (`splitInProgress`, `rescanInProgress`, `refillScheduled`, and the
+last split/rescan/refill timestamps and errors). A bad seed or an
 unreachable fullnode lands in `degraded` **without** taking the service
 down — the wallet endpoints keep serving.
+
+Each `last*At` is written on both the success and the failure path of its
+operation, so the timestamp always describes the outcome reported next to
+it; a non-`null` `last*Error` alongside a `last*At` means that run failed
+at that time, not that an older run succeeded then.
+
+While the bootstrap is `degraded`, `POST /fund` returns `503
+SERVICE_NOT_READY` rather than accepting work — a degraded bootstrap has
+stopped refilling the pool, so serving would only produce
+`409 POOL_EXHAUSTED` indefinitely while `/ready` reported `503` for the
+same instant.
 
 ### Health checks
 

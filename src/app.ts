@@ -4,8 +4,14 @@ import {
   handleStatus,
   handleReady,
   handleLive,
+  handleFund,
+  handleMetrics,
 } from "./routes";
-import { ensureRequestId, jsonError, withRequestIdHeader } from "./http";
+import {
+  ensureRequestId,
+  jsonErrorFromCode,
+  withRequestIdHeader,
+} from "./http";
 import { logger } from "./logger";
 import { recordHttpRequest } from "./metrics";
 import { runWithTestName } from "./log-context";
@@ -53,7 +59,7 @@ async function runHandler(
       requestId,
       meta: { route, error: message },
     });
-    res = jsonError(500, "INTERNAL_ERROR", "Internal Server Error", false);
+    res = jsonErrorFromCode("INTERNAL_ERROR", "Internal Server Error");
     status = 500;
   } finally {
     const latencyMs = Number((performance.now() - startedAt).toFixed(2));
@@ -68,8 +74,26 @@ async function runHandler(
 }
 
 /**
- * Build the Bun.serve route table. Registers `/status` and `/ready`
- * alongside the wallet endpoints; `/fund` and `/metrics` are not wired yet.
+ * Fallback for anything the route table doesn't match.
+ *
+ * Covers both an unknown path and a known path called with an undefined method
+ * (`GET /fund`, `POST /metrics`): Bun's method-keyed route objects do not emit
+ * 405, they simply fall through. Without this the response would be Bun's bare
+ * 404 with no body, contradicting the RFC's "every failure carries
+ * `{error, message, retryable}`" contract.
+ */
+export const handleNotFound: Handler = withObservability("unmatched", (req) =>
+  jsonErrorFromCode(
+    "INVALID_REQUEST",
+    `No route for ${req.method} ${new URL(req.url).pathname}`,
+    404,
+  ),
+);
+
+/**
+ * Build the Bun.serve route table: the wallet-generation endpoints, the
+ * genesis/readiness probes (`/status`, `/ready`, `/live`), and the funding
+ * endpoints (`POST /fund`, `GET /metrics`).
  */
 export function createRoutes() {
   return {
@@ -87,6 +111,12 @@ export function createRoutes() {
     },
     "/live": {
       GET: withObservability("/live", handleLive),
+    },
+    "/fund": {
+      POST: withObservability("/fund", handleFund),
+    },
+    "/metrics": {
+      GET: withObservability("/metrics", handleMetrics),
     },
   };
 }
