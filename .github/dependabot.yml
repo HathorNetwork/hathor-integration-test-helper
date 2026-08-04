@@ -1,5 +1,25 @@
 version: 2
 updates:
+  # Same posture as the actions block below: weekly, 7-day cooldown against
+  # a compromised fresh release, patch churn filtered out. Security updates
+  # bypass the ignore rules, so genuine vulnerabilities still surface.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    assignees:
+      - "tuliomir"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
