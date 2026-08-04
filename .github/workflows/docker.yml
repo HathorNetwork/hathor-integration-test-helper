@@ -18,6 +18,19 @@ env:
 
 jobs:
   publish:
+    # The `v*` trigger stays broad on purpose. A narrow tag filter
+    # (`v[0-9]+.[0-9]+.[0-9]+`) would work, but it would also mean a
+    # malformed release tag — `vfoo`, `v0.0.2.1` — produces no run at all,
+    # so a botched release looks identical to no release. Keeping the
+    # trigger broad preserves that signal: malformed tags still reach the
+    # version regex below and fail loudly.
+    #
+    # This guard only silences tags that are *deliberately* not releases.
+    # SemVer uses `-` to introduce a pre-release identifier, and this
+    # workflow refuses pre-releases anyway because it always moves
+    # `:latest`, so anything containing `-` would be rejected downstream
+    # regardless — skipping it is strictly quieter, never more permissive.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

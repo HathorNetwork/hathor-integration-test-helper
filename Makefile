@@ -1,6 +1,13 @@
 # Docker configuration (override via environment: DOCKER_REGISTRY, DOCKER_TAG)
 IMAGE_NAME := hathor-integration-test-helper
-REGISTRY := $(or $(DOCKER_REGISTRY),docker.io/hathor)
+# Deliberately no default. Releases are published by
+# .github/workflows/docker.yml, which builds multi-arch, verifies the tag
+# against package.json, and refuses to overwrite a published version. This
+# Makefile does none of that: it builds single-arch and pushes whatever it
+# has. Defaulting to the real namespace would make `make push` a one-word
+# way to clobber a published multi-arch image and move `:latest`, bypassing
+# every guard. Set DOCKER_REGISTRY explicitly to push to a scratch registry.
+REGISTRY := $(DOCKER_REGISTRY)
 # package.json is the source of truth for the version, so a local build
 # carries the same tag the publish workflow would produce for this commit.
 # Override with DOCKER_TAG for throwaway builds.
@@ -12,7 +19,7 @@ TAG := $(or $(DOCKER_TAG),$(VERSION),latest)
 help:
 	@echo "Docker commands:"
 	@echo "  make build      - Build Docker image"
-	@echo "  make push       - Push image to registry"
+	@echo "  make push       - Push to a scratch registry (needs DOCKER_REGISTRY)"
 	@echo "  make run        - Run container locally"
 	@echo "  make clean      - Remove local images"
 	@echo ""
@@ -24,12 +31,23 @@ help:
 build:
 	docker build -t $(IMAGE_NAME):$(TAG) -t $(IMAGE_NAME):latest .
 
+# Checked in the recipe, not with `ifndef`: make evaluates conditionals at
+# parse time, so a top-level $(error) would fire on `make build` too.
+# `:latest` is intentionally not pushed here — the release workflow owns it.
+# Not `push: build` — a prerequisite would run the whole image build before
+# the guard could reject the push. Check first, then build.
 .PHONY: push
-push: build
+push:
+	@test -n "$(REGISTRY)" || { \
+		echo "DOCKER_REGISTRY is unset."; \
+		echo "Releases are published by .github/workflows/docker.yml from a"; \
+		echo "signed tag — see the Releases section of CLAUDE.md."; \
+		echo "Set DOCKER_REGISTRY to push a scratch image somewhere else."; \
+		exit 1; \
+	}
+	$(MAKE) build
 	docker tag $(IMAGE_NAME):$(TAG) $(REGISTRY)/$(IMAGE_NAME):$(TAG)
-	docker tag $(IMAGE_NAME):latest $(REGISTRY)/$(IMAGE_NAME):latest
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(TAG)
-	docker push $(REGISTRY)/$(IMAGE_NAME):latest
 
 .PHONY: run
 run:

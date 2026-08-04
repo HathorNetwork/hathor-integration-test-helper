@@ -78,6 +78,27 @@ Published versions are immutable. The workflow also refuses to publish
 a version that already exists on DockerHub, so re-releasing is never an
 option — the only way forward is a bump.
 
+**A publish that fails after the push cannot be retried.** The
+immutability check is what makes re-running the job fail, so recovery is
+always "bump, merge, tag again", never "re-run the workflow". Budget for
+that before cutting a release; discovering it mid-incident is expensive.
+A run that fails *before* the push leaves DockerHub untouched and can be
+re-run safely — every guard deliberately runs ahead of the push, and
+`Build and push` is the last step. The one unrecoverable state is a
+partial failure inside that step: `:<version>` lands but `:latest` does
+not, and the bump-and-retag recovery leaves that version permanently
+non-`latest`.
+
+**The workflow is the only sanctioned publish path.** `make push` builds
+single-arch and skips every guard, so it has no default registry and
+refuses to run without an explicit `DOCKER_REGISTRY`; `:latest` is never
+pushed from the Makefile. `docker push` and `make push` are on the deny
+list for the same reason the tagging commands are.
+
+Snapshot or pre-release tags (anything with a `-`, e.g.
+`v0.0.1-20260728`) are skipped by the workflow rather than failed, so
+they never publish and never produce a red run.
+
 `.claude/settings.json` denies the tagging commands as a backstop, not
 as a hard boundary — patterns cannot reliably see through compound
 commands. It also denies read-only `git tag -l`; list tags with
