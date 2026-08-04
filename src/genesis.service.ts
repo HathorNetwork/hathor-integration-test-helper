@@ -299,7 +299,12 @@ export async function waitForRewardUnlock(
   options: { pollIntervalMs?: number; timeoutMs?: number } = {},
 ): Promise<void> {
   const pollIntervalMs = options.pollIntervalMs ?? 1_000;
-  const timeoutMs = options.timeoutMs ?? 600_000; // 10 minutes safety net
+  // A minute is enough because on a network that is producing blocks the
+  // lock clears in seconds; the rest is headroom for readability. A longer
+  // wait cannot rescue a stack that has stopped producing blocks — it only
+  // delays the `degraded` verdict a developer needs in order to start
+  // debugging, while /ready and /fund report a transient reason throughout.
+  const timeoutMs = options.timeoutMs ?? 60_000;
 
   // Distinguish "field genuinely absent" from an explicit 0. Absent means the
   // fullnode API version isn't populated yet (storage not synced, or a wallet-

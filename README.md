@@ -184,21 +184,19 @@ test-wallet-helper:
     retries: 10
 ```
 
-> ⚠️ **Budget generously for the startup window.** With
-> `FUNDING_ENABLED=true`, `/ready` returns `200 ready` only once the
-> funding bootstrap has completed *and* the wallet holds spendable
+> ℹ️ With `FUNDING_ENABLED=true`, `/ready` returns `200 ready` only once
+> the funding bootstrap has completed *and* the wallet holds spendable
 > UTXOs. Until then it reports `503 funding_initializing`, and `/fund`
 > refuses for the same window — so a client that waits for `/ready` can
 > never race the bootstrap's initial split.
 >
-> That window can be long. The bootstrap waits out genesis sync (up to
-> `GENESIS_SYNC_TIMEOUT_MS`, default 120s) and then the block-reward
-> height lock (a built-in 10-minute safety net) inside up to three split
-> attempts, so on a cold private network it can run to tens of minutes
-> before readiness flips. Gating a
-> funding-enabled stack on `/ready` is correct — but size the
-> healthcheck `retries`/`start_period` against that worst case, not
-> against the few seconds genesis sync alone used to take.
+> On a healthy stack that window is seconds. The timeouts around it are
+> deliberately tight: genesis sync is capped at
+> `GENESIS_SYNC_TIMEOUT_MS` (default 60s) and each of the up-to-three
+> split attempts waits at most a minute for the block-reward height
+> lock, so the bootstrap reaches a verdict within a few minutes at worst
+> rather than hanging. Size healthcheck `retries`/`start_period` against
+> that, and treat anything longer as a stack to debug, not to wait on.
 >
 > A bootstrap that could not seed the pool stays `503 funding_degraded`
 > even after the wallet shows funds. That state does not self-heal, so a

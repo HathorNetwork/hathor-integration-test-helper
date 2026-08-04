@@ -354,7 +354,11 @@ export function loadConfig(
   const GENESIS_SEED_WORDS =
     GENESIS_SEED_WORDS_RAW || GENESIS_SEED_WORDS_DEFAULT;
 
-  const GENESIS_SYNC_TIMEOUT_MS_DEFAULT = "120000";
+  // A minute is enough because sync against a reachable fullnode is
+  // near-immediate; the rest is headroom. A stack that has not synced by then
+  // is misconfigured rather than slow, and `degraded` is the verdict a
+  // developer can act on. Raise it (max 600s) for genuinely slow environments.
+  const GENESIS_SYNC_TIMEOUT_MS_DEFAULT = "60000";
   const GENESIS_SYNC_TIMEOUT_MS = parseIntEnv(
     env,
     "GENESIS_SYNC_TIMEOUT_MS",
