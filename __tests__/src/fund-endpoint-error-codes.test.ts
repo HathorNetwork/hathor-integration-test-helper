@@ -19,6 +19,10 @@ import {
   __setRouteGenesisForTest,
   __resetRouteGenesisForTest,
 } from "../../src/routes";
+import {
+  __resetStartupForTest,
+  __setStartupStateForTest,
+} from "../../src/startup";
 
 // Drives the REAL fund.service through the route (DI, not mock.module) to
 // verify handleFund maps a ServiceError to its RFC response and an unexpected
@@ -61,6 +65,11 @@ function fundReq(body: unknown): Request {
 }
 
 beforeEach(() => {
+  // These cases assert the *domain* error codes, so the bootstrap must look
+  // complete — /fund now refuses any phase other than `ready` before it gets
+  // as far as reserving a UTXO.
+  __resetStartupForTest();
+  __setStartupStateForTest("ready");
   __setRouteGenesisForTest({ ready: () => true, address: () => genesisAddress });
   __setFundDepsForTest({
     getGenesisWallet: fakeWallet,
@@ -72,6 +81,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The phase is a process global Bun shares across files; leaving it `ready`
+  // would make a later file's not-ready assertions pass for the wrong reason.
+  __resetStartupForTest();
   __setSplitInProgressForTest(false);
   __resetFundDepsForTest();
   __resetFundStateForTest();

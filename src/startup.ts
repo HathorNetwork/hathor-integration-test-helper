@@ -34,7 +34,12 @@ import { logger } from "./logger";
  */
 
 /** Lifecycle phases of the funding subsystem bootstrap. */
-type StartupPhase = "idle" | "initializing" | "ready" | "disabled" | "degraded";
+export type StartupPhase =
+  | "idle"
+  | "initializing"
+  | "ready"
+  | "disabled"
+  | "degraded";
 
 /** Externally visible startup state exposed by GET /status. */
 interface StartupState {

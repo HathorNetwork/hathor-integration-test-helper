@@ -5,7 +5,7 @@ import { isGenesisReady, isGenesisFunded, getGenesisAddress } from "./genesis.se
 import { getPoolStats, type PoolStats } from "./utxo-pool.service";
 import { parseFundBody } from "./parse-fund-body";
 import { fundAddress, getFundingLifecycleState } from "./fund.service";
-import { getStartupState } from "./startup";
+import { getStartupState, type StartupPhase } from "./startup";
 import { config } from "./config";
 import { jsonErrorFromCode, jsonErrorFromService } from "./http";
 import { logger } from "./logger";
@@ -109,6 +109,7 @@ export type ReadyReason =
   | "funding_disabled"
   | "genesis_wallet_not_ready"
   | "funding_degraded"
+  | "funding_initializing"
   | "wallet_unfunded"
   | "funds_query_error"
   | "ready";
@@ -127,6 +128,7 @@ export interface ReadinessVerdict {
  *  - funding off                          → ready    (wallet-generation-only mode)
  *  - genesis not yet synced               → not ready (genesis_wallet_not_ready)
  *  - funding bootstrap degraded           → not ready (funding_degraded)
+ *  - bootstrap not finished seeding       → not ready (funding_initializing)
  *  - genesis ready, wallet has no funds   → not ready (wallet_unfunded)
  *  - genesis ready, wallet has funds      → ready
  *
@@ -135,22 +137,34 @@ export interface ReadinessVerdict {
  * clients (small requests from the pool, large requests wallet-sourced), even
  * when the test pool is momentarily empty between splits.
  *
- * The one case the wallet verdict alone gets wrong is a degraded bootstrap: if
- * the initial split could not seed the pool, the genesis reward can still
- * unlock on its own and flip `walletFunded` true, so `/ready` would report 200
- * over an empty pool the bootstrap has given up refilling. `startupDegraded`
- * closes that trap — a degraded funding subsystem is never ready, whatever the
- * wallet holds. Checked after genesis liveness so a genesis that never synced
- * still reports the more specific `genesis_wallet_not_ready`.
+ * Two cases the wallet verdict alone gets wrong, both resolved by the bootstrap
+ * phase rather than a lossy boolean:
+ *
+ * A *degraded* bootstrap: if the initial split could not seed the pool, the
+ * genesis reward can still unlock on its own and flip `walletFunded` true, so
+ * `/ready` would report 200 over an empty pool the bootstrap has given up
+ * refilling.
+ *
+ * An *unfinished* bootstrap: `isGenesisReady()` flips true as soon as the
+ * genesis wallet syncs, which happens well before the initial split seeds the
+ * pool. Reporting ready in that window sends a client that correctly waited on
+ * `/ready` straight into `/fund`, where it races the bootstrap's own split for
+ * the same candidate UTXOs — and losing that race fails the bootstrap into
+ * `degraded`, which never self-heals because `bootPromise` is memoized. So the
+ * window does not merely produce a confusing `POOL_EXHAUSTED`; it can poison
+ * the service for its whole lifetime.
+ *
+ * Both are checked after genesis liveness so a genesis that never synced still
+ * reports the more specific `genesis_wallet_not_ready`.
  *
  * Kept pure (no module reads or I/O) so it can be unit-tested by passing inputs
- * directly; the caller reads live state and passes the booleans.
+ * directly; the caller reads live state and passes it in.
  */
 export function computeReadiness(
   fundingEnabled: boolean,
   genesisReady: boolean,
   walletFunded: boolean,
-  startupDegraded: boolean,
+  startupPhase: StartupPhase,
 ): ReadinessVerdict {
   if (!fundingEnabled) {
     return { ready: true, readyReason: "funding_disabled" };
@@ -158,8 +172,14 @@ export function computeReadiness(
   if (!genesisReady) {
     return { ready: false, readyReason: "genesis_wallet_not_ready" };
   }
-  if (startupDegraded) {
+  if (startupPhase === "degraded") {
     return { ready: false, readyReason: "funding_degraded" };
+  }
+  // Anything that is not a completed bootstrap — `idle`, `initializing`, or
+  // the `disabled` phase reached with funding somehow still enabled — cannot
+  // serve a fund request, so it must not report ready.
+  if (startupPhase !== "ready") {
+    return { ready: false, readyReason: "funding_initializing" };
   }
   if (!walletFunded) {
     return { ready: false, readyReason: "wallet_unfunded" };
@@ -178,7 +198,7 @@ export function computeReadiness(
 export interface ReadinessInputs {
   genesisReady: boolean;
   fundsQuery: () => Promise<boolean>;
-  startupDegraded: boolean;
+  startupPhase: StartupPhase;
 }
 
 /**
@@ -197,15 +217,15 @@ export async function currentReadiness(
   inputs: ReadinessInputs = {
     genesisReady: isGenesisReady(),
     fundsQuery: isGenesisFunded,
-    startupDegraded: getStartupState().phase === "degraded",
+    startupPhase: getStartupState().phase,
   },
 ): Promise<ReadinessVerdict & { stats: PoolStats }> {
   const stats = getPoolStats();
-  const { genesisReady, fundsQuery, startupDegraded } = inputs;
+  const { genesisReady, fundsQuery, startupPhase } = inputs;
   let walletFunded = false;
-  // Skip the funds query when degraded: the verdict is already decided and the
-  // query would only add a wallet read whose answer cannot change it.
-  if (config.FUNDING_ENABLED && genesisReady && !startupDegraded) {
+  // Skip the funds query unless the bootstrap has completed: in every other
+  // phase the verdict is already decided, so the wallet read cannot change it.
+  if (config.FUNDING_ENABLED && genesisReady && startupPhase === "ready") {
     try {
       walletFunded = await fundsQuery();
     } catch (err) {
@@ -226,7 +246,7 @@ export async function currentReadiness(
     config.FUNDING_ENABLED,
     genesisReady,
     walletFunded,
-    startupDegraded,
+    startupPhase,
   );
   return { ...verdict, stats };
 }
@@ -268,7 +288,7 @@ function routeReadiness() {
   return currentReadiness({
     genesisReady: routeGenesis.ready(),
     fundsQuery: isGenesisFunded,
-    startupDegraded: getStartupState().phase === "degraded",
+    startupPhase: getStartupState().phase,
   });
 }
 
@@ -322,7 +342,8 @@ let fundSeq = 0;
  *
  * 400 INVALID_REQUEST when funding is disabled entirely (`FUNDING_ENABLED=
  * false`) — see below for why that is not a 503; 503 SERVICE_NOT_READY until
- * genesis has synced or while the bootstrap is degraded; 400/413
+ * genesis has synced, while the bootstrap is still seeding the pool, or once
+ * it has degraded — i.e. for exactly the phases `/ready` refuses; 400/413
  * INVALID_REQUEST for a malformed body; on success 200 with
  * `{txId, amount, utxoSource}`. Domain failures (`POOL_EXHAUSTED`,
  * `SPLIT_IN_PROGRESS`, `UTXO_STALE`, `FUND_TIMEOUT`) arrive as
@@ -350,9 +371,22 @@ export async function handleFund(req: Request): Promise<Response> {
   // nothing will ever refill, while /ready reports 503 for the same instant.
   // Report the same 503 the readiness probe does — it stays retryable because
   // an operator restart genuinely clears it, unlike FUNDING_ENABLED=false.
-  if (getStartupState().phase === "degraded") {
+  const startupPhase = getStartupState().phase;
+  if (startupPhase === "degraded") {
     return jsonErrorFromService(
       new ServiceNotReadyError("funding subsystem is degraded"),
+    );
+  }
+  // Genesis syncs before the initial split seeds the pool, so this window is
+  // reachable by any client that polled /ready and got a 200 under the old
+  // verdict. Serving it would not just answer POOL_EXHAUSTED over an empty
+  // pool — the request triggers a background refill that reserves from the
+  // same candidates the bootstrap's own split is using, and losing that race
+  // drops the bootstrap into `degraded` permanently. Refuse until the
+  // bootstrap has finished, matching what /ready now reports for this phase.
+  if (startupPhase !== "ready") {
+    return jsonErrorFromService(
+      new ServiceNotReadyError("funding subsystem is still initializing"),
     );
   }
 
