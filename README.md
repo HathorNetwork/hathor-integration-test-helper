@@ -36,7 +36,7 @@ and PR conventions.
 | Method | Path              | Purpose                                            |
 | ------ | ----------------- | -------------------------------------------------- |
 | `GET`  | `/simpleWallet`   | Pop a pre-generated 24-word wallet with 22 legacy addresses and their shielded pairs |
-| `GET`  | `/multisigWallet` | Generate N-of-M multisig wallets (`participants`, `numSignatures` query params) |
+| `GET`  | `/multisigWallet` | Generate N-of-M multisig wallets with their shielded pairs (`participants`, `numSignatures` query params) |
 | `GET`  | `/status`         | Operator diagnostic: readiness, pool counts, genesis address, bootstrap phase, funding lifecycle |
 | `GET`  | `/ready`          | Readiness probe — `200` when ready, `503` otherwise |
 | `GET`  | `/live`           | Liveness probe — always `200`                      |
@@ -213,9 +213,9 @@ Lib-managed.
 
 ### `shieldedAddresses`
 
-Alongside the legacy `addresses`, `/simpleWallet` returns one pre-calculated
-shielded pair per BIP32 index (same `ADDRESS_COUNT` window, indices
-`[0, ADDRESS_COUNT)`):
+Alongside the legacy `addresses`, `/simpleWallet` — and every entry in
+`/multisigWallet`'s `wallets` array — returns one pre-calculated shielded pair
+per BIP32 index (same `ADDRESS_COUNT` window, indices `[0, ADDRESS_COUNT)`):
 
 ```jsonc
 {
@@ -244,6 +244,13 @@ Derivation matches the Lib exactly: scan keys come from `m/44'/280'/1'/0` and
 spend keys from `m/44'/280'/2'/0`, each derived per index with standard BIP32
 `deriveChild`. A fixed-seed test pins index 0 against wallet-lib's committed
 shielded fixture, so the two repos cannot drift apart unnoticed.
+
+For `/multisigWallet` the pairs are **per participant**, unlike `addresses`:
+the P2SH addresses are shared because they derive from the sorted pubkey set,
+whereas shielded keys derive from each participant's own root key and the
+redeem script plays no part. wallet-lib derives scan/spend keys whenever a
+wallet starts from a root key, with no multisig exemption, so a multisig wallet
+pays that cost at start whether or not the test touches a shielded feature.
 
 The field is optional in the response type for consumers pinned to a wallet-lib
 without shielded support; this service always populates it.

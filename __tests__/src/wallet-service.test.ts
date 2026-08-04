@@ -199,4 +199,23 @@ describe("generateShieldedAddresses", () => {
     // would hand callers shielded addresses this wallet cannot spend.
     expect(w.shieldedAddresses).toEqual(generateShieldedAddresses(w.words));
   });
+
+  test("generateMultisigWallet populates shieldedAddresses per participant", () => {
+    for (const w of generateMultisigWallet(3, 2)) {
+      expect(w.shieldedAddresses).toHaveLength(config.ADDRESS_COUNT);
+      for (const p of w.shieldedAddresses!) {
+        expect(Object.keys(p).sort()).toEqual(EXPECTED_KEYS);
+      }
+      expect(w.shieldedAddresses).toEqual(generateShieldedAddresses(w.words));
+    }
+  });
+
+  test("multisig shielded pairs are per-seed, not shared like addresses", () => {
+    const [a, b] = generateMultisigWallet(2, 2);
+    // The P2SH addresses are shared by design — they derive from the sorted
+    // pubkey set. Shielded pairs derive from each participant's own root key,
+    // so sharing them would hand a participant addresses it cannot spend.
+    expect(a!.addresses).toEqual(b!.addresses);
+    expect(a!.shieldedAddresses).not.toEqual(b!.shieldedAddresses);
+  });
 });
