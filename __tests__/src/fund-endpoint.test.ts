@@ -66,10 +66,12 @@ function fundRequest(body: unknown): Request {
 }
 
 beforeEach(() => {
-  // Pin the startup phase to a non-degraded baseline: the readiness verdict
-  // reads the process-global phase, and another test file (e.g. startup.test)
-  // may have left it `degraded` — Bun shares module globals across files.
+  // Pin the startup phase to a completed bootstrap. The readiness verdict and
+  // /fund both require phase `ready` — reset alone leaves it `idle`, which now
+  // correctly refuses to fund. Resetting first also clears any phase another
+  // file (e.g. startup.test) left behind; Bun shares module globals.
   __resetStartupForTest();
+  __setStartupStateForTest("ready");
   __setGenesisStateForTest({ funded: true });
   __setRouteGenesisForTest({ ready: () => true, address: () => genesisAddress });
   __setFundDepsForTest({
@@ -180,6 +182,39 @@ describe("POST /fund happy path and readiness", () => {
     const body = (await res.json()) as { error: string; message: string };
     expect(body.error).toBe("SERVICE_NOT_READY");
     expect(body.message).toContain("degraded");
+  });
+
+  test("503 SERVICE_NOT_READY while the bootstrap is still initializing", async () => {
+    // The window this fix closes. Genesis has synced and the pool is populated
+    // in beforeEach, so every other gate would let this through — but the real
+    // bootstrap has not finished its initial split yet. Serving here lets the
+    // request's background refill race the bootstrap's own split for the same
+    // candidates, and losing that race degrades the service permanently.
+    __setStartupStateForTest("initializing");
+
+    const res = await handleFund(fundRequest({ address: validAddress, amount: 500 }));
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as {
+      error: string;
+      message: string;
+      retryable: boolean;
+    };
+    expect(body.error).toBe("SERVICE_NOT_READY");
+    expect(body.message).toContain("initializing");
+    // Retryable: unlike FUNDING_ENABLED=false, this clears on its own.
+    expect(body.retryable).toBe(true);
+  });
+
+  test("503 while the bootstrap has not started (idle)", async () => {
+    // `idle` is not merely "before initializing" — a bootstrap that never ran
+    // leaves an unseeded pool just as surely as one still running.
+    __setStartupStateForTest("idle");
+
+    const res = await handleFund(fundRequest({ address: validAddress, amount: 500 }));
+
+    expect(res.status).toBe(503);
+    expect((await res.json() as { error: string }).error).toBe("SERVICE_NOT_READY");
   });
 });
 

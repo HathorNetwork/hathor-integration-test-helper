@@ -16,12 +16,17 @@ degraded`) surfaced by `GET /status`. `src/genesis.service.ts` connects
 and syncs the genesis wallet; a bad seed or unreachable fullnode lands in
 `degraded` without taking the HTTP server down. `GET /ready` and
 `/status` share the pure `computeReadiness()` verdict in `src/routes.ts`.
-Readiness gates on the genesis *wallet*, not the pool: once genesis is
-up, `currentReadiness()` calls `isGenesisFunded()` (a single `getUtxos`
-query) and reports `wallet_unfunded` until the wallet holds spendable
-UTXOs (a still-height-locked block reward counts as unfunded), or
-`funds_query_error` if that query throws. Endpoint and readiness-reason
-tables live in [`README.md`](README.md).
+Readiness takes the lifecycle phase itself, not a boolean: the phase
+must be `ready` before the service reports ready or serves `/fund`.
+`isGenesisReady()` flips true when the wallet syncs, which is well
+before the initial split seeds the pool — reporting ready in that
+window sent a correctly-waiting client into `/fund`, where its
+background refill raced the bootstrap's own split and could degrade the
+service permanently. That window is now `funding_initializing`. Only at
+phase `ready` does `currentReadiness()` call `isGenesisFunded()` (a
+single `getUtxos` query), reporting `wallet_unfunded` if the wallet has
+since drained, or `funds_query_error` if the query throws. Endpoint and
+readiness-reason tables live in [`README.md`](README.md).
 
 Test seams (readiness, startup) use dependency injection, not
 `mock.module` — Bun's module mocks are process-global and leak across

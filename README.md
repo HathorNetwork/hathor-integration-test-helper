@@ -122,14 +122,19 @@ the funding counters:
 | `funding_disabled`           | `true`  | `FUNDING_ENABLED=false` — wallet-generation-only mode |
 | `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or the genesis wallet never became ready) |
 | `funding_degraded`           | `false` | Genesis ready, but the funding bootstrap degraded (e.g. the initial split could not seed the pool) — never ready even if the wallet later shows funds |
-| `wallet_unfunded`            | `false` | Genesis ready, but the wallet holds no spendable UTXOs (e.g. a block reward still height-locked) |
+| `funding_initializing`       | `false` | Genesis ready, but the bootstrap has not finished seeding the pool. The genesis wallet syncs well before the initial split completes, so this window occurs on every boot |
+| `wallet_unfunded`            | `false` | Bootstrap complete, but the wallet holds no spendable UTXOs. Rare at boot — the reward lock is waited out *inside* the bootstrap, so that window reports `funding_initializing` instead; this reason means the wallet drained after a successful start |
 | `funds_query_error`          | `false` | Genesis ready, but the wallet funds query failed — funding state is unknown |
-| `ready`                      | `true`  | Genesis ready and the wallet holds spendable UTXOs |
+| `ready`                      | `true`  | Genesis ready, bootstrap complete, and the wallet holds spendable UTXOs |
 
-Readiness is decoupled from the test pool: it gates on whether the
-genesis *wallet* holds spendable UTXOs (a single `getUtxos` check), so
-`/ready` reaches `200 ready` as soon as genesis syncs to a funded
-wallet — even before the first split has refilled the test pool.
+Readiness gates on two things: the funding bootstrap having completed,
+and the genesis *wallet* holding spendable UTXOs (a single `getUtxos`
+check). Once the bootstrap is complete it is decoupled from the test
+pool's *level* — a momentarily empty pool between splits is still ready,
+because the wallet can source a refill. But it is not decoupled from the
+pool ever having been seeded: `/ready` stays `503 funding_initializing`
+until the initial split lands, so a client that waits for readiness can
+never race the bootstrap.
 
 `/status` additionally reports a `startup.phase` of `idle`,
 `initializing`, `ready`, `disabled`, or `degraded`, plus a `funding`
@@ -179,17 +184,23 @@ test-wallet-helper:
     retries: 10
 ```
 
-> ℹ️ With `FUNDING_ENABLED=true`, `/ready` reflects the genesis wallet
-> and the funding bootstrap: it returns `200 ready` once the wallet
-> holds spendable UTXOs and the bootstrap completed, and `503
-> wallet_unfunded` until then — including the startup window where the
-> genesis block reward is still height-locked (it becomes spendable as
-> blocks are mined). A bootstrap that could not seed the pool stays `503
-> funding_degraded` even after the wallet shows funds — that state does
-> not self-heal, so a stuck-degraded stack needs operator attention, not
-> more retries. Gating a funding-enabled stack on `/ready` is
-> correct; just allow enough healthcheck retries to cover that initial
-> reward-lock window.
+> ℹ️ With `FUNDING_ENABLED=true`, `/ready` returns `200 ready` only once
+> the funding bootstrap has completed *and* the wallet holds spendable
+> UTXOs. Until then it reports `503 funding_initializing`, and `/fund`
+> refuses for the same window — so a client that waits for `/ready` can
+> never race the bootstrap's initial split.
+>
+> On a healthy stack that window is seconds. The timeouts around it are
+> deliberately tight: genesis sync is capped at
+> `GENESIS_SYNC_TIMEOUT_MS` (default 60s) and each of the up-to-three
+> split attempts waits at most a minute for the block-reward height
+> lock, so the bootstrap reaches a verdict within a few minutes at worst
+> rather than hanging. Size healthcheck `retries`/`start_period` against
+> that, and treat anything longer as a stack to debug, not to wait on.
+>
+> A bootstrap that could not seed the pool stays `503 funding_degraded`
+> even after the wallet shows funds. That state does not self-heal, so a
+> stuck-degraded stack needs operator attention, not more retries.
 
 ## Funding modes
 

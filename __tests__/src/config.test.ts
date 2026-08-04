@@ -247,8 +247,8 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ FUNDING_ENABLED: "maybe" })).toThrow(ConfigError);
   });
 
-  test("GENESIS_SYNC_TIMEOUT_MS defaults to 120000", () => {
-    expect(loadConfig({}, noWarn).GENESIS_SYNC_TIMEOUT_MS).toBe(120_000);
+  test("GENESIS_SYNC_TIMEOUT_MS defaults to 60000", () => {
+    expect(loadConfig({}, noWarn).GENESIS_SYNC_TIMEOUT_MS).toBe(60_000);
   });
 
   test("GENESIS_SYNC_TIMEOUT_MS parses an override", () => {
