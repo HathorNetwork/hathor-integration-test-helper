@@ -1,0 +1,942 @@
+openapi: 3.1.0
+
+info:
+  title: Hathor Integration Test Helper
+  version: 0.0.2
+  summary: >-
+    Test-wallet generation and race-condition-free on-chain funding for
+    hathor-wallet-lib integration tests.
+  description: |
+    HTTP service that hands integration tests pre-generated wallets and funds
+    addresses from a genesis-backed UTXO pool. The behavioural contract is the
+    [approved RFC](https://github.com/HathorNetwork/rfcs/blob/master/projects/hathor-wallet-lib/0000-integration-test-helper.md);
+    this document describes the wire format the current implementation serves.
+
+    ## Error responses
+
+    Every failure — including the fallback for an unmatched route — carries the
+    same `{error, message, retryable}` body (see the `Error` schema). `error`
+    is the machine-readable code, `retryable` says whether an automatic retry
+    with backoff can succeed. Each code is pinned to one `retryable` value, so
+    clients may key their retry loop on either.
+
+    ## Unmatched routes
+
+    A request for an undeclared path, or for a declared path with a method this
+    document does not list (`GET /fund`, `POST /metrics`), is answered
+    `404 INVALID_REQUEST` in the same error shape — not a bare 404.
+
+    ## Number precision
+
+    `/status`, `/ready`, and `POST /fund` are serialized with wallet-lib's
+    `JSONBigInt`, which writes `bigint` fields as unquoted JSON numbers of
+    arbitrary magnitude. Amount-like fields (`amount` on the fund response) can
+    therefore exceed the JS safe-integer range, and a client that parses with
+    stock `JSON.parse` will silently lose precision on those values. Parse with
+    a bigint-aware reader — `JSONBigInt.parse` on the wallet-lib side. The same
+    applies in the request direction: send an out-of-safe-range `amount` as a
+    digit-only string.
+
+    ## Deployment assumption
+
+    The service has no authentication layer: anyone who can reach `/fund` can
+    spend the genesis wallet, and failure messages surface raw internal detail
+    because a test author debugging a run is the intended reader. Deploy it on
+    a trusted network only.
+
+servers:
+  - url: http://localhost:3020
+    description: Local instance on the default port (`PORT`, default `3020`).
+
+tags:
+  - name: wallets
+    description: Wallet material generation. Available whatever `FUNDING_ENABLED` is.
+  - name: health
+    description: Liveness, readiness, and the operator diagnostic.
+  - name: funding
+    description: On-chain funding from the genesis wallet's UTXO pool.
+  - name: observability
+    description: Counter snapshots for test harnesses and operators.
+
+paths:
+  /simpleWallet:
+    get:
+      tags: [wallets]
+      operationId: getSimpleWallet
+      summary: Pop a pre-generated simple wallet
+      description: |
+        Returns the oldest wallet from the pre-generation cache and schedules a
+        background refill. A caller never blocks on that refill: an empty cache
+        falls back to generating a seed synchronously, which is the only path
+        where `retrieveTimeMs` reflects BIP39 derivation cost rather than
+        cache-pop cost.
+
+        Each wallet is a fresh 24-word seed, so no two callers receive the same
+        wallet and no coordination between parallel test workers is needed.
+      parameters:
+        - $ref: "#/components/parameters/TestName"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: A wallet the caller now owns exclusively.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleWalletResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /multisigWallet:
+    get:
+      tags: [wallets]
+      operationId: getMultisigWallet
+      summary: Generate an N-of-M multisig wallet set
+      description: |
+        Generates one seed per participant and derives the shared P2SH address
+        set every participant signs against. Distributing each entry to the
+        right peer is the caller's job.
+
+        Generation is synchronous and uncached — there is no upper bound on
+        `participants`, so a caller asking for an unusually large multisig pays
+        the seed-generation cost on its own request.
+      parameters:
+        - $ref: "#/components/parameters/TestName"
+        - $ref: "#/components/parameters/RequestId"
+        - name: participants
+          in: query
+          required: true
+          description: >-
+            Number of participants (M). Digit-only; a value with a sign,
+            decimal point, or trailing characters is rejected rather than
+            truncated.
+          schema:
+            type: string
+            pattern: "^\\d+$"
+          example: "3"
+        - name: numSignatures
+          in: query
+          required: true
+          description: >-
+            Signatures required to spend (N). Must be `>= 1` and
+            `<= participants`.
+          schema:
+            type: string
+            pattern: "^\\d+$"
+          example: "2"
+      responses:
+        "200":
+          description: >-
+            One wallet per participant. All entries share the same `addresses`
+            and `multisigDebugData.pubkeys` by design.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultisigWalletResponse"
+        "400":
+          description: |
+            A query parameter is missing, is not a plain non-negative integer,
+            is below 1, or `numSignatures` exceeds `participants`.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: INVALID_REQUEST
+                message: numSignatures must be <= participants
+                retryable: false
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /status:
+    get:
+      tags: [health]
+      operationId: getStatus
+      summary: Operator diagnostic
+      description: |
+        Always `200`, whatever the verdict — the readiness answer lives in the
+        body, not the status code. Alongside the same verdict `/ready` computes,
+        it reports the test-pool count, the genesis address once known, the
+        bootstrap phase, and the funding subsystem's in-flight flags and last
+        outcomes. Intended for humans; wire probes to `/ready` and `/live`.
+      parameters:
+        - $ref: "#/components/parameters/TestName"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Diagnostic snapshot.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ready:
+    get:
+      tags: [health]
+      operationId: getReady
+      summary: Readiness probe
+      description: |
+        `200` when the service can serve its intended workload, `503`
+        otherwise; the body is identical either way and names the reason.
+        This is the endpoint to wire into a container `HEALTHCHECK` or a
+        compose `depends_on: {condition: service_healthy}` gate.
+
+        Readiness gates on the genesis *wallet*, not the test pool: a single
+        UTXO query decides it, so `/ready` flips to `200` as soon as genesis
+        syncs to a funded wallet, even before the first split has filled the
+        pool. With `FUNDING_ENABLED=false` it reports `200 funding_disabled`
+        the moment the server is up.
+      parameters:
+        - $ref: "#/components/parameters/TestName"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Ready — `readyReason` is `ready` or `funding_disabled`.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+              example:
+                ready: true
+                readyReason: ready
+                testUtxos: 100
+        "503":
+          description: >-
+            Not ready. `readyReason` distinguishes a still-syncing genesis, a
+            bootstrap that is still seeding the pool, a degraded bootstrap, an
+            unfunded wallet, and a failed funds query.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+              example:
+                ready: false
+                readyReason: funding_initializing
+                testUtxos: 0
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /live:
+    get:
+      tags: [health]
+      operationId: getLive
+      summary: Liveness probe
+      description: >-
+        Always `200` while the process is serving. Use it for restart-if-dead
+        only — it says nothing about whether funding works, so gating dependent
+        services on it starts them too early.
+      parameters:
+        - $ref: "#/components/parameters/TestName"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: The process is up.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [live]
+                properties:
+                  live:
+                    type: boolean
+                    const: true
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /fund:
+    post:
+      tags: [funding]
+      operationId: postFund
+      summary: Send funds to an address
+      description: |
+        Reserves a UTXO and broadcasts a transaction paying `amount` to
+        `address`. The reservation is what makes concurrent funding
+        race-free: no two in-flight requests can be handed the same UTXO.
+
+        Which source serves the request depends on the amount, and the
+        response says which one did:
+
+        | Request | `utxoSource` | Cost |
+        | --- | --- | --- |
+        | `amount <= UTXO_SPLIT_AMOUNT` | `test` | exactly one pool UTXO, whatever the amount |
+        | `amount > UTXO_SPLIT_AMOUNT` | `large` | no pool UTXO — sourced live from the genesis wallet |
+
+        A `test` request always consumes one whole pool UTXO, so a suite
+        issuing many tiny requests drains the pool exactly as fast as one
+        issuing full-sized requests, and the difference stays in the genesis
+        wallet rather than returning to the pool. Prefer omitting `amount`.
+
+        A `large` request cannot exhaust the pool; it waits up to
+        `FUND_TIMEOUT_MS` (default 30s) for a covering wallet output and then
+        answers `409 FUND_TIMEOUT`.
+
+        `amount` echoes the request, not a re-read of the chain — `txId` is the
+        authority for what settled.
+      parameters:
+        - $ref: "#/components/parameters/TestName"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        description: >-
+          `content-type` must include `application/json`, and the body must be
+          a JSON object — an array, `null`, or a primitive is rejected.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FundRequest"
+            examples:
+              default-amount:
+                summary: Fund with the configured split amount
+                value:
+                  address: WYiD1E8n5oB9weZ8NMyM3KoCjKf1KCjWAZ
+              explicit-amount:
+                summary: Explicit amount, safe-integer range
+                value:
+                  address: WYiD1E8n5oB9weZ8NMyM3KoCjKf1KCjWAZ
+                  amount: 500
+              large-amount:
+                summary: Amount beyond the JS safe-integer range
+                value:
+                  address: WYiD1E8n5oB9weZ8NMyM3KoCjKf1KCjWAZ
+                  amount: "9007199254740993"
+      responses:
+        "200":
+          description: Transaction built, signed, and broadcast.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundResponse"
+        "400":
+          description: |
+            Either the request is malformed — wrong content type, unparseable
+            JSON, non-object body, missing/invalid `address`, or an `amount`
+            that is not a positive integer — or funding is switched off for
+            this deployment (`FUNDING_ENABLED=false`).
+
+            The disabled case is deliberately a non-retryable `400` rather than
+            a `503`: this deployment can never fund, so telling the client to
+            keep retrying would be a lie.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bad-address:
+                  value:
+                    error: INVALID_REQUEST
+                    message: address must be a valid Hathor address for the configured network
+                    retryable: false
+                funding-disabled:
+                  value:
+                    error: INVALID_REQUEST
+                    message: funding is disabled on this service (FUNDING_ENABLED=false)
+                    retryable: false
+        "409":
+          description: |
+            The request was well-formed but could not be served right now.
+            Every code here is retryable:
+
+            - `POOL_EXHAUSTED` — no UTXO available for the requested amount; a
+              background refill has been triggered.
+            - `SPLIT_IN_PROGRESS` — the test pool is empty while the refill
+              split runs; it will refill shortly.
+            - `UTXO_STALE` — the reserved UTXO had already been spent
+              externally, and the retry hit the same. A rescan ran.
+            - `FUND_TIMEOUT` — no large wallet output became available within
+              `FUND_TIMEOUT_MS`.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                pool-exhausted:
+                  value:
+                    error: POOL_EXHAUSTED
+                    message: No available UTXOs for this amount
+                    retryable: true
+                split-in-progress:
+                  value:
+                    error: SPLIT_IN_PROGRESS
+                    message: UTXO split is in progress; pool will refill shortly
+                    retryable: true
+                utxo-stale:
+                  # `message` here is relayed verbatim from wallet-lib, so its
+                  # exact wording varies with the failure and the lib version.
+                  # Match on `error`, never on this string.
+                  value:
+                    error: UTXO_STALE
+                    message: >-
+                      Token: 00. Output [0] of transaction [abc123] is already
+                      spent
+                    retryable: true
+                fund-timeout:
+                  value:
+                    error: FUND_TIMEOUT
+                    message: Timed out waiting for a large UTXO (30000ms)
+                    retryable: true
+        "413":
+          description: >-
+            Body exceeds `MAX_REQUEST_BODY_BYTES` (default 16384). Same
+            `INVALID_REQUEST` code as the other malformed-input cases — only
+            the status differs.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: INVALID_REQUEST
+                message: Request body exceeds 16384 bytes
+                retryable: false
+        "503":
+          description: >-
+            The genesis wallet has not synced yet, the bootstrap is still
+            seeding the pool, or the bootstrap is degraded — exactly the
+            phases `/ready` refuses, so the two never disagree. Retryable,
+            but only the first two clear on their own: a degraded bootstrap
+            does not self-heal and needs an operator, not more retries.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                not-synced:
+                  value:
+                    error: SERVICE_NOT_READY
+                    message: Genesis wallet not yet initialized
+                    retryable: true
+                initializing:
+                  value:
+                    error: SERVICE_NOT_READY
+                    message: funding subsystem is still initializing
+                    retryable: true
+                degraded:
+                  value:
+                    error: SERVICE_NOT_READY
+                    message: funding subsystem is degraded
+                    retryable: true
+        "500":
+          description: >-
+            Unexpected failure while funding. The raw failure message is
+            surfaced rather than a generic string — a test author debugging the
+            run is the intended reader.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: INTERNAL_ERROR
+                message: Fund transaction completed without a hash
+                retryable: false
+
+  /metrics:
+    get:
+      tags: [observability]
+      operationId: getMetrics
+      summary: Counter snapshot
+      description: >-
+        Point-in-time JSON snapshot of the per-route HTTP counters and the
+        funding-subsystem counters. Process-local and reset on restart — this
+        is not a Prometheus exposition endpoint.
+      parameters:
+        - $ref: "#/components/parameters/TestName"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Current counters.
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    TestName:
+      name: X-Test-Name
+      in: header
+      required: false
+      description: >-
+        Correlation header. Its value is bound to the request's log context and
+        stamped on every log line the request emits, including background work
+        it schedules (splits, rescans) that outlives the request itself. Omitted
+        or blank, logs record `unknown`. Send the test's name to make a failing
+        run's server-side logs greppable.
+      schema:
+        type: string
+      example: should fund a wallet with a large amount
+
+    RequestId:
+      name: x-request-id
+      in: header
+      required: false
+      description: >-
+        Tracing ID echoed back on the response. A value outside
+        `[A-Za-z0-9._~+/=:-]{1,128}` is discarded and a UUID minted in its
+        place, so the response header is always present and always well-formed.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._~+/=:-]{1,128}$"
+
+  headers:
+    RequestId:
+      description: >-
+        The incoming `x-request-id` when it was well-formed, otherwise a minted
+        UUID. Present on every response.
+      schema:
+        type: string
+
+  responses:
+    InternalError:
+      description: >-
+        The handler threw unexpectedly. Present on every endpoint because the
+        observability wrapper converts any escaping throw into this shape.
+      headers:
+        x-request-id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: INTERNAL_ERROR
+            message: Internal Server Error
+            retryable: false
+
+  schemas:
+    Error:
+      type: object
+      description: >-
+        The one error body every failure uses. Each `error` code maps to a
+        fixed HTTP status and a fixed `retryable` value; `INVALID_REQUEST` is
+        the single exception, keeping its code and `retryable: false` across
+        `400`, `404` (unmatched route), and `413` (oversized body).
+      required: [error, message, retryable]
+      properties:
+        error:
+          type: string
+          description: |
+            Machine-readable failure code:
+
+            | Code | Status | `retryable` |
+            | --- | --- | --- |
+            | `POOL_EXHAUSTED` | 409 | `true` |
+            | `SPLIT_IN_PROGRESS` | 409 | `true` |
+            | `UTXO_STALE` | 409 | `true` |
+            | `FUND_TIMEOUT` | 409 | `true` |
+            | `SERVICE_NOT_READY` | 503 | `true` |
+            | `INVALID_REQUEST` | 400 (also 404, 413) | `false` |
+            | `INTERNAL_ERROR` | 500 | `false` |
+          enum:
+            - POOL_EXHAUSTED
+            - SPLIT_IN_PROGRESS
+            - UTXO_STALE
+            - FUND_TIMEOUT
+            - SERVICE_NOT_READY
+            - INVALID_REQUEST
+            - INTERNAL_ERROR
+        message:
+          type: string
+          description: Human-readable detail. Free-form; do not branch on it.
+        retryable:
+          type: boolean
+          description: >-
+            Whether an automatic retry with backoff can succeed. Fixed per
+            code, so it never disagrees with `error`.
+
+    ShieldedAddress:
+      type: object
+      description: >-
+        One pre-calculated shielded pair, mirroring wallet-lib's
+        `IPrecalculatedShieldedAddress` field for field. Injecting these lets a
+        wallet skip live shielded EC derivation at boot.
+      required:
+        [bip32AddressIndex, shieldedBase58, spendBase58, scanPubkey, spendPubkey]
+      properties:
+        bip32AddressIndex:
+          type: integer
+          minimum: 0
+          description: BIP32 index this pair was derived at.
+        shieldedBase58:
+          type: string
+          description: User-facing 71-byte shielded address.
+        spendBase58:
+          type: string
+          description: On-chain P2PKH address from `HASH160(spend_pubkey)`.
+        scanPubkey:
+          type: string
+          description: Compressed scan child pubkey, hex.
+        spendPubkey:
+          type: string
+          description: Compressed spend child pubkey, hex.
+
+    SimpleWalletResponse:
+      type: object
+      required: [words, addresses, retrieveTimeMs]
+      properties:
+        words:
+          type: string
+          description: 24-word BIP39 seed phrase.
+        addresses:
+          type: array
+          description: >-
+            P2PKH addresses at indices `[0, ADDRESS_COUNT)` under
+            `m/44'/280'/0'/0`. `ADDRESS_COUNT` is 22.
+          items:
+            type: string
+        shieldedAddresses:
+          type: array
+          description: >-
+            One shielded pair per index over the same window. Optional in the
+            schema for consumers pinned to a wallet-lib without shielded
+            support; this service always populates it.
+          items:
+            $ref: "#/components/schemas/ShieldedAddress"
+        retrieveTimeMs:
+          $ref: "#/components/schemas/RetrieveTimeMs"
+
+    MultisigWalletResponse:
+      type: object
+      required: [wallets, retrieveTimeMs]
+      properties:
+        wallets:
+          type: array
+          description: One entry per participant, in generation order.
+          items:
+            type: object
+            required: [words, addresses, multisigDebugData]
+            properties:
+              words:
+                type: string
+                description: This participant's own 24-word BIP39 seed phrase.
+              addresses:
+                type: array
+                description: >-
+                  The shared P2SH addresses at indices `[0, ADDRESS_COUNT)`.
+                  Identical across participants — that is what lets any
+                  `numSignatures`-sized subset co-sign.
+                items:
+                  type: string
+              multisigDebugData:
+                type: object
+                description: >-
+                  Mirrors the `multisigDebugData` field of wallet-lib's
+                  `PrecalculatedWalletData`, so the response is a drop-in for
+                  the Lib's precalculated multisig wallets.
+                required: [total, minSignatures, pubkeys]
+                properties:
+                  total:
+                    type: integer
+                    description: Participant count (the `participants` query param).
+                  minSignatures:
+                    type: integer
+                    description: Signatures required (the `numSignatures` query param).
+                  pubkeys:
+                    type: array
+                    description: >-
+                      Participant account xpubs, sorted lexicographically so
+                      the derived address set does not depend on
+                      seed-generation order. The seeds themselves are not
+                      duplicated here — each entry carries its own `words`.
+                    items:
+                      type: string
+        retrieveTimeMs:
+          $ref: "#/components/schemas/RetrieveTimeMs"
+
+    RetrieveTimeMs:
+      type: number
+      minimum: 0
+      description: >-
+        Milliseconds spent obtaining the wallet material, rounded to two
+        decimals. Near zero on the cached path; it only reflects real seed
+        derivation on the synchronous empty-cache fallback and on
+        `/multisigWallet`, which is never cached.
+
+    ReadinessVerdict:
+      type: object
+      required: [ready, readyReason, testUtxos]
+      properties:
+        ready:
+          type: boolean
+          description: >-
+            The verdict `/ready` turns into its status code. Redundant with
+            `readyReason`, and reported here because `/status` is always `200`.
+        readyReason:
+          type: string
+          description: |
+            Why the service is or is not ready. Evaluated in this order — the
+            first matching rule wins:
+
+            | Reason | `ready` | Meaning |
+            | --- | --- | --- |
+            | `funding_disabled` | `true` | `FUNDING_ENABLED=false`; wallet-generation-only mode is intentionally healthy |
+            | `genesis_wallet_not_ready` | `false` | Funding on, genesis still syncing or never became ready |
+            | `funding_degraded` | `false` | Genesis ready but the bootstrap gave up (e.g. the initial split could not seed the pool) — never ready even once the wallet shows funds |
+            | `funding_initializing` | `false` | Genesis ready but the bootstrap has not finished seeding the pool. The genesis wallet syncs well before the initial split completes, so every boot passes through this window |
+            | `funds_query_error` | `false` | The wallet UTXO query itself threw, so funding state is unknown — reported instead of asserting the wallet is empty |
+            | `wallet_unfunded` | `false` | The query answered: no spendable UTXOs. Rare at boot, since the reward lock is waited out inside the bootstrap; it means the wallet drained after a successful start |
+            | `ready` | `true` | Genesis ready, bootstrap complete, and the wallet holds spendable UTXOs |
+
+            The wallet UTXO query runs only once every earlier rule has passed,
+            which is why `funds_query_error` precedes `wallet_unfunded` — a
+            failed query never reaches the funded/unfunded decision.
+
+            `POST /fund` refuses for exactly the phases that report
+            `funding_initializing` or `funding_degraded`, so a client that
+            waits for `/ready` can never race the bootstrap's initial split.
+          enum:
+            - funding_disabled
+            - genesis_wallet_not_ready
+            - funding_degraded
+            - funding_initializing
+            - funds_query_error
+            - wallet_unfunded
+            - ready
+        testUtxos:
+          type: integer
+          minimum: 0
+          description: >-
+            Test-sized UTXOs currently available in the pool. Diagnostic only —
+            the readiness verdict does not consider it, so an empty pool between
+            splits does not by itself make the service unready.
+
+    ReadinessResponse:
+      allOf:
+        - $ref: "#/components/schemas/ReadinessVerdict"
+      description: Body of `/ready`, identical on `200` and `503`.
+
+    StatusResponse:
+      allOf:
+        - $ref: "#/components/schemas/ReadinessVerdict"
+        - type: object
+          required: [genesisAddress, startup, funding]
+          properties:
+            genesisAddress:
+              type: [string, "null"]
+              description: >-
+                The genesis wallet's funding address, or `null` until the
+                wallet is ready.
+            startup:
+              type: object
+              description: Funding-subsystem bootstrap state.
+              required: [phase, lastError, lastUpdatedAt]
+              properties:
+                phase:
+                  type: string
+                  description: |
+                    - `idle` — bootstrap not started yet.
+                    - `initializing` — connecting and syncing genesis, seeding the pool.
+                    - `ready` — bootstrap completed.
+                    - `disabled` — `FUNDING_ENABLED=false`; genesis is never touched.
+                    - `degraded` — a bad seed, unreachable fullnode, or failed
+                      initial split. The HTTP server stays up and the wallet
+                      endpoints keep serving.
+                  enum: [idle, initializing, ready, disabled, degraded]
+                lastError:
+                  type: [string, "null"]
+                  description: Message that caused the last transition, when one did.
+                lastUpdatedAt:
+                  type: string
+                  format: date-time
+                  description: When the phase was last set.
+            funding:
+              type: object
+              description: >-
+                Split, rescan, and refill state. Each `last*At` is stamped on
+                both the success and the failure path of its operation, so the
+                timestamp always describes the outcome reported beside it — a
+                non-`null` `last*Error` means *that* run failed at *that* time.
+              required:
+                - splitInProgress
+                - rescanInProgress
+                - refillScheduled
+                - lastSplitAt
+                - lastSplitError
+                - lastRescanAt
+                - lastRescanError
+                - lastRefillAt
+                - lastRefillError
+              properties:
+                splitInProgress:
+                  type: boolean
+                  description: A UTXO split is running.
+                rescanInProgress:
+                  type: boolean
+                  description: A pool rescan is running; `/fund` requests park on it.
+                refillScheduled:
+                  type: boolean
+                  description: A background refill timer is armed.
+                lastSplitAt:
+                  type: [string, "null"]
+                  format: date-time
+                lastSplitError:
+                  type: [string, "null"]
+                lastRescanAt:
+                  type: [string, "null"]
+                  format: date-time
+                lastRescanError:
+                  type: [string, "null"]
+                lastRefillAt:
+                  type: [string, "null"]
+                  format: date-time
+                lastRefillError:
+                  type: [string, "null"]
+
+    FundRequest:
+      type: object
+      required: [address]
+      properties:
+        address:
+          type: string
+          minLength: 1
+          description: >-
+            Destination address. Surrounding whitespace is trimmed, then the
+            value must decode as a valid Hathor address for the configured
+            network.
+        amount:
+          description: >-
+            Amount in the smallest unit. Omitted or `null`, it defaults to
+            `UTXO_SPLIT_AMOUNT` (default 1000). A number must be a positive
+            safe integer; anything larger must be sent as a digit-only string
+            (surrounding whitespace trimmed, `"0"` rejected).
+
+            Validation applies to the parsed JSON *value*, not the literal, so
+            `1e3` and `500.0` are accepted — they parse to the integers 1000
+            and 500. The string form is stricter: it is matched against
+            `^[0-9]+$` after trimming, so `"1e3"` and `"500.0"` are rejected.
+            Negatives and non-integer values are rejected in both forms.
+          oneOf:
+            - type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            - type: string
+              pattern: "^\\s*[0-9]+\\s*$"
+            # The handler treats an explicit null exactly like an omitted
+            # field; without this branch a generated client would reject a
+            # request the service answers with 200.
+            - type: "null"
+
+    FundResponse:
+      type: object
+      required: [txId, amount, utxoSource]
+      properties:
+        txId:
+          type: string
+          description: >-
+            Hash of the broadcast transaction. The authority for what actually
+            settled — poll the fullnode with it rather than trusting `amount`.
+        amount:
+          type: integer
+          minimum: 1
+          description: >-
+            The requested amount, echoed back. Serialized by `JSONBigInt`, so
+            it can exceed the JS safe-integer range and needs a bigint-aware
+            parser on the client.
+        utxoSource:
+          type: string
+          description: >-
+            Which reservation path served the request: `test` spent one pool
+            UTXO, `large` was sourced live from the genesis wallet.
+          enum: [test, large]
+
+    MetricsResponse:
+      type: object
+      required:
+        - routes
+        - fundCount
+        - staleUtxoRescans
+        - splitCount
+        - splitFailures
+        - refillFailures
+      properties:
+        routes:
+          type: object
+          description: >-
+            Per-route HTTP counters, keyed by route path. A route appears only
+            once it has served a request. Requests that matched no route are
+            accumulated under the key `unmatched`.
+          additionalProperties:
+            type: object
+            required: [requests, errors, avgLatencyMs]
+            properties:
+              requests:
+                type: integer
+                minimum: 0
+              errors:
+                type: integer
+                minimum: 0
+                description: Responses with a status of 400 or above.
+              avgLatencyMs:
+                type: number
+                minimum: 0
+                description: >-
+                  Mean handler latency over all requests to this route,
+                  rounded to two decimals. `0` when there are none.
+        fundCount:
+          type: integer
+          minimum: 0
+          description: Successful `/fund` transactions.
+        staleUtxoRescans:
+          type: integer
+          minimum: 0
+          description: >-
+            Completed pool rescans. Counts every rescan whatever triggered it;
+            a stale UTXO is the only trigger today.
+        splitCount:
+          type: integer
+          minimum: 0
+          description: Successful UTXO splits.
+        splitFailures:
+          type: integer
+          minimum: 0
+          description: Splits that threw.
+        refillFailures:
+          type: integer
+          minimum: 0
+          description: >-
+            Background refills that failed, including those that failed in the
+            wallet query before a split was ever attempted — those never reach
+            `splitFailures`.

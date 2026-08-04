@@ -43,7 +43,11 @@ and PR conventions.
 | `POST` | `/fund`           | Reserve a pool UTXO and send funds to an address   |
 | `GET`  | `/metrics`        | JSON snapshot of per-route and funding counters    |
 
-A canonical OpenAPI document lands with the project-docs PR.
+The machine-readable contract for all of the above — request bodies,
+every response status, the error codes, and the readiness reasons — is
+[`docs/openapi.yaml`](docs/openapi.yaml). The tables below summarize it
+for humans; the document is the one to feed a client generator, and CI
+validates it on every PR (`bun run validate:openapi`).
 
 ### `POST /fund`
 
@@ -123,8 +127,8 @@ the funding counters:
 | `genesis_wallet_not_ready`   | `false` | Funding on, genesis still syncing (or the genesis wallet never became ready) |
 | `funding_degraded`           | `false` | Genesis ready, but the funding bootstrap degraded (e.g. the initial split could not seed the pool) — never ready even if the wallet later shows funds |
 | `funding_initializing`       | `false` | Genesis ready, but the bootstrap has not finished seeding the pool. The genesis wallet syncs well before the initial split completes, so this window occurs on every boot |
-| `wallet_unfunded`            | `false` | Bootstrap complete, but the wallet holds no spendable UTXOs. Rare at boot — the reward lock is waited out *inside* the bootstrap, so that window reports `funding_initializing` instead; this reason means the wallet drained after a successful start |
 | `funds_query_error`          | `false` | Genesis ready, but the wallet funds query failed — funding state is unknown |
+| `wallet_unfunded`            | `false` | Bootstrap complete, but the wallet holds no spendable UTXOs. Rare at boot — the reward lock is waited out *inside* the bootstrap, so that window reports `funding_initializing` instead; this reason means the wallet drained after a successful start |
 | `ready`                      | `true`  | Genesis ready, bootstrap complete, and the wallet holds spendable UTXOs |
 
 Readiness gates on two things: the funding bootstrap having completed,
