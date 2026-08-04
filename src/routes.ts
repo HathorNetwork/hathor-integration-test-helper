@@ -46,8 +46,13 @@ export function handleSimpleWallet(_req: Request): Response {
  *
  * Validates the two query params (presence, integer, positivity,
  * `numSignatures <= participants`) before delegating to the generator.
- * No upper bound on `participants`: callers wanting an unusually large
- * multisig pay the synchronous seed-generation cost themselves.
+ *
+ * The cost is not caller-local: this handler is synchronous, so seed
+ * generation and per-participant shielded derivation block the event loop
+ * for every other client — `/live`, `/ready` and `/fund` included. There is
+ * also an effective ceiling of 16 participants, above which P2SH derivation
+ * throws and surfaces as a generic 500. Both are tracked in
+ * HathorNetwork/hathor-integration-test-helper#32.
  */
 export function handleMultisigWallet(req: Request): Response {
   const start = nowMs();
