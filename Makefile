@@ -40,9 +40,17 @@ build:
 push:
 	@test -n "$(REGISTRY)" || { \
 		echo "DOCKER_REGISTRY is unset."; \
-		echo "Releases are published by .github/workflows/docker.yml from a"; \
-		echo "signed tag — see the Releases section of CLAUDE.md."; \
+		echo "Releases are published by .github/workflows/docker.yml, which"; \
+		echo "requires a signed annotated tag on a signed commit — see the"; \
+		echo "Releases section of CLAUDE.md."; \
 		echo "Set DOCKER_REGISTRY to push a scratch image somewhere else."; \
+		exit 1; \
+	}
+	@test "$(TAG)" != "latest" || { \
+		echo "TAG resolved to 'latest', which this target refuses to push."; \
+		echo "That happens when DOCKER_TAG is unset and the version could not"; \
+		echo "be read from package.json — pushing would move a floating tag"; \
+		echo "rather than an identifiable build. Set DOCKER_TAG explicitly."; \
 		exit 1; \
 	}
 	$(MAKE) build

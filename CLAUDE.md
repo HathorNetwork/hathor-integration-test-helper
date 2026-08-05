@@ -74,6 +74,14 @@ merged commit. Bumping the version is ordinary work; the *tag* is the
 release. Agents prepare the tag command and hand it over — a human runs
 it.
 
+**Only a signed tag on a signed commit deploys.** The workflow verifies
+both through GitHub's API and refuses anything else, so the release tag
+must be annotated *and* signed — `git tag -s`, not `git tag`. A
+lightweight tag carries no signature and is rejected outright. This is
+what makes the human touch load-bearing rather than conventional:
+ancestry proves the code was reviewed, the signature proves who asked
+for it to ship.
+
 Published versions are immutable. The workflow also refuses to publish
 a version that already exists on DockerHub, so re-releasing is never an
 option — the only way forward is a bump.

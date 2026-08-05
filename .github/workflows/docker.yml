@@ -51,6 +51,50 @@ jobs:
             exit 1
           fi
 
+      # Ancestry proves the code was reviewed; this proves *who* asked for the
+      # release. Without it, anyone who can push a tag to this repository can
+      # publish a public image from any reviewed commit. Both objects are
+      # checked: a signed tag on an unsigned commit still means unreviewed
+      # provenance for the thing actually shipping.
+      #
+      # Verification is read from GitHub's API rather than `git tag -v`, so
+      # trust follows the keys registered to the org's accounts instead of a
+      # keyring the runner would have to import (and that a workflow edit
+      # could quietly widen).
+      - name: Require a signed tag on a signed commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Only an annotated tag carries a signature at all; a lightweight
+          # tag is just a ref and can never be verified.
+          object_type="$(gh api "repos/${REPO}/git/ref/tags/${REF}" --jq '.object.type')"
+          if [ "$object_type" != "tag" ]; then
+            echo "::error::${REF} is a lightweight tag and carries no signature. Release tags must be annotated and signed (git tag -s)."
+            exit 1
+          fi
+
+          tag_sha="$(gh api "repos/${REPO}/git/ref/tags/${REF}" --jq '.object.sha')"
+          tag_verified="$(gh api "repos/${REPO}/git/tags/${tag_sha}" --jq '.verification.verified')"
+          if [ "$tag_verified" != "true" ]; then
+            reason="$(gh api "repos/${REPO}/git/tags/${tag_sha}" --jq '.verification.reason')"
+            echo "::error::Tag ${REF} is not a verified signature (reason: ${reason}). Refusing to publish."
+            exit 1
+          fi
+
+          commit_verified="$(gh api "repos/${REPO}/commits/${COMMIT}" --jq '.commit.verification.verified')"
+          if [ "$commit_verified" != "true" ]; then
+            reason="$(gh api "repos/${REPO}/commits/${COMMIT}" --jq '.commit.verification.reason')"
+            echo "::error::Commit ${COMMIT} is not a verified signature (reason: ${reason}). Refusing to publish."
+            exit 1
+          fi
+
+          echo "Tag ${REF} and commit ${COMMIT} are both verified signatures."
+
       - name: Resolve and verify version
         id: tags
         run: |
