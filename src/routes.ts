@@ -377,13 +377,13 @@ export async function handleFund(req: Request): Promise<Response> {
       new ServiceNotReadyError("funding subsystem is degraded"),
     );
   }
-  // Genesis syncs before the initial split seeds the pool, so this window is
-  // reachable by any client that polled /ready and got a 200 under the old
-  // verdict. Serving it would not just answer POOL_EXHAUSTED over an empty
-  // pool — the request triggers a background refill that reserves from the
-  // same candidates the bootstrap's own split is using, and losing that race
-  // drops the bootstrap into `degraded` permanently. Refuse until the
-  // bootstrap has finished, matching what /ready now reports for this phase.
+  // Genesis syncs before the initial split seeds the pool, so a ready genesis
+  // does not mean a seeded pool. Serving here would not just answer
+  // POOL_EXHAUSTED over an empty pool — the request triggers a background
+  // refill that reserves from the same candidates the bootstrap's own split
+  // is using, and losing that race drops the bootstrap into `degraded`
+  // permanently. Refuse until the bootstrap has finished, matching what
+  // /ready reports for this phase.
   if (startupPhase !== "ready") {
     return jsonErrorFromService(
       new ServiceNotReadyError("funding subsystem is still initializing"),

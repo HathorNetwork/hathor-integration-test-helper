@@ -19,10 +19,10 @@ and syncs the genesis wallet; a bad seed or unreachable fullnode lands in
 Readiness takes the lifecycle phase itself, not a boolean: the phase
 must be `ready` before the service reports ready or serves `/fund`.
 `isGenesisReady()` flips true when the wallet syncs, which is well
-before the initial split seeds the pool — reporting ready in that
-window sent a correctly-waiting client into `/fund`, where its
-background refill raced the bootstrap's own split and could degrade the
-service permanently. That window is now `funding_initializing`. Only at
+before the initial split seeds the pool. That window reports
+`funding_initializing`: a client sent into `/fund` there would trigger a
+background refill that races the bootstrap's own split and can degrade
+the service permanently. Only at
 phase `ready` does `currentReadiness()` call `isGenesisFunded()` (a
 single `getUtxos` query), reporting `wallet_unfunded` if the wallet has
 since drained, or `funds_query_error` if the query throws. Endpoint and

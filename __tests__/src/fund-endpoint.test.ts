@@ -67,8 +67,8 @@ function fundRequest(body: unknown): Request {
 
 beforeEach(() => {
   // Pin the startup phase to a completed bootstrap. The readiness verdict and
-  // /fund both require phase `ready` — reset alone leaves it `idle`, which now
-  // correctly refuses to fund. Resetting first also clears any phase another
+  // /fund both require phase `ready` — reset alone leaves it `idle`, which refuses
+  // to fund. Resetting first also clears any phase another
   // file (e.g. startup.test) left behind; Bun shares module globals.
   __resetStartupForTest();
   __setStartupStateForTest("ready");
