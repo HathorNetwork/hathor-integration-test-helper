@@ -1,12 +1,7 @@
 # Stage 1: Install dependencies
 FROM oven/bun:1 AS deps
 WORKDIR /app
-# The patch file and bunfig must be present before install: package.json's
-# `patchedDependencies` points at patches/, and `bun install` applies it then.
-# Without the patch, install fails (frozen lockfile) or wallet-lib ships
-# unpatched.
 COPY package.json bun.lock bunfig.toml ./
-COPY patches ./patches
 RUN bun install --frozen-lockfile --production
 
 # Stage 2: Production image
