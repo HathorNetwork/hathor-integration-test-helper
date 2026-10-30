@@ -248,9 +248,10 @@ shielded fixture, so the two repos cannot drift apart unnoticed.
 For `/multisigWallet` the pairs are **per participant**, unlike `addresses`:
 the P2SH addresses are shared because they derive from the sorted pubkey set,
 whereas shielded keys derive from each participant's own root key and the
-redeem script plays no part. wallet-lib derives scan/spend keys whenever a
-wallet starts from a root key, with no multisig exemption, so a multisig wallet
-pays that cost at start whether or not the test touches a shielded feature.
+redeem script plays no part. wallet-lib derives a shielded address for every
+index whenever a wallet starts from a root key, with no multisig exemption, so a
+multisig wallet pays that cost at start whether or not the test touches a
+shielded feature; injecting these pairs skips it.
 
 The field is optional in the response type for consumers pinned to a wallet-lib
 without shielded support; this service always populates it.
