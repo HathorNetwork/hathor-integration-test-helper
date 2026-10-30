@@ -170,6 +170,25 @@ export function __resetSplitStateForTest(): void {
 }
 
 /**
+ * Whether the tx that created an output has a timestamp before `nowSeconds`.
+ *
+ * The fullnode rejects a tx whose timestamp is not strictly greater than that
+ * of every tx it spends from, at 1-second granularity. Wallet-sourced outputs
+ * are often change from a fund sent moments ago, so spending one in the same
+ * second fails validation. Skipping it costs a short wait (large funding
+ * polls) or a fallback (fee sourcing). An output whose tx the wallet can't
+ * date is skipped too. The read is local wallet storage, not a fullnode call.
+ */
+async function createdBefore(
+  wallet: Pick<FundWallet, "getTx">,
+  txId: string,
+  nowSeconds: number,
+): Promise<boolean> {
+  const tx = (await wallet.getTx(txId)) as { timestamp?: unknown } | null;
+  return typeof tx?.timestamp === "number" && tx.timestamp < nowSeconds;
+}
+
+/**
  * Query the genesis wallet for a large output (>= `minAmount`) and atomically
  * reserve it through the pool. Returns the reserved UTXO, or `null` when the
  * wallet currently exposes no covering output.
@@ -206,7 +225,9 @@ export async function reserveLargeFromWallet(
     amount_bigger_than: minAmount - 1n,
     only_available_utxos: !options.includeLocked,
   });
+  const nowSeconds = Math.floor(Date.now() / 1000);
   for (const u of utxos) {
+    if (!(await createdBefore(wallet, u.tx_id, nowSeconds))) continue;
     const reserved = reserveLarge({ txId: u.tx_id, index: u.index, amount: u.amount });
     if (reserved !== null) {
       return reserved;
@@ -238,7 +259,9 @@ export async function reserveFeeFromWallet(
   const bySize = [...utxos].sort((a, b) =>
     a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0,
   );
+  const nowSeconds = Math.floor(Date.now() / 1000);
   for (const u of bySize) {
+    if (!(await createdBefore(wallet, u.tx_id, nowSeconds))) continue;
     const reserved = reserveFee({ txId: u.tx_id, index: u.index, amount: u.amount });
     if (reserved !== null) {
       return reserved;

@@ -100,11 +100,16 @@ describe("reserveLargeFromWallet", () => {
 
   // Wallet fake exposing only the getUtxos surface reserveLargeFromWallet uses;
   // it records the query options so we can assert the size filter is pushed down.
+  let txTimestamps: Record<string, number> = {};
+
   function makeQueryWallet(): FundWallet {
     return {
       async getUtxos(options: GetUtxosOptions) {
         getUtxosCalls.push(options);
         return { utxos: availableLarge };
+      },
+      async getTx(id: string) {
+        return { timestamp: txTimestamps[id] ?? 0 };
       },
     } as unknown as FundWallet;
   }
@@ -112,7 +117,22 @@ describe("reserveLargeFromWallet", () => {
   beforeEach(() => {
     getUtxosCalls = [];
     availableLarge = [];
+    txTimestamps = {};
     __setFundDepsForTest({ getGenesisWallet: makeQueryWallet });
+  });
+
+  test("skips an output whose tx is from this second", async () => {
+    // Change from a fund sent moments ago: spending it in the same second
+    // fails fullnode validation, so the next candidate is taken instead.
+    availableLarge = [
+      { tx_id: "fresh", index: 0, amount: 50000n },
+      { tx_id: "settled", index: 0, amount: 50000n },
+    ];
+    txTimestamps = { fresh: Math.floor(Date.now() / 1000) + 1 };
+
+    const reserved = await reserveLargeFromWallet(30000n);
+
+    expect(reserved!.utxo.txId).toBe("settled");
   });
 
   test("pushes the size filter into the query and reserves a covering output", async () => {

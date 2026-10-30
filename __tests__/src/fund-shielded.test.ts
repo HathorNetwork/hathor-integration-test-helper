@@ -39,6 +39,8 @@ let getUtxosCalls: GetUtxosOptions[] = [];
 let sendOutputsCalls: SendOutputsRequest[] = [];
 let templateSends = 0;
 let sendOutputsFailures: Error[] = [];
+/** Per-tx timestamps the fake wallet reports; unlisted txs are old. */
+let txTimestamps: Record<string, number> = {};
 
 function makeWallet(): FundWallet {
   return Object.assign(new EventEmitter(), {
@@ -55,7 +57,7 @@ function makeWallet(): FundWallet {
       return { utxos };
     },
     async getTx(id: string) {
-      return { id };
+      return { id, timestamp: txTimestamps[id] ?? 0 };
     },
   }) as unknown as FundWallet;
 }
@@ -87,6 +89,7 @@ beforeEach(() => {
   sendOutputsCalls = [];
   templateSends = 0;
   sendOutputsFailures = [];
+  txTimestamps = {};
   const w = makeWallet();
   __setFundDepsForTest({
     getGenesisWallet: () => w,
@@ -177,6 +180,20 @@ describe("fundAddress with a shielded amount", () => {
     expect(sendOutputsCalls[0]!.outputs[0]).toMatchObject({
       shieldedMode: ShieldedOutputMode.AMOUNT_SHIELDED,
     });
+  });
+
+  test("skips a fee output created this second", async () => {
+    populateFromUtxos([{ txId: "test", index: 0, value: 1000n }]);
+    walletUtxos = [
+      { tx_id: "fresh-change", index: 0, amount: 10n },
+      { tx_id: "old-seed", index: 0, amount: 500n },
+    ];
+    // Spending it now would give the fund the same timestamp as its parent.
+    txTimestamps = { "fresh-change": Math.floor(Date.now() / 1000) + 1 };
+
+    await fundAddress(SHIELDED, 1000n, "amount");
+
+    expect(sendOutputsCalls[0]!.inputs[1]).toEqual({ txId: "old-seed", index: 0 });
   });
 
   test("a fund whose fee fits the test UTXO needs no fee input", async () => {
