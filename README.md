@@ -110,7 +110,7 @@ For a shielded request the rows above apply to `amount` plus the fee, with
 one exception. When `amount` fits a pool UTXO but the fee doesn't (e.g. a
 default-size shielded fund), the pool UTXO pays the amount and a second,
 below-`UTXO_SPLIT_AMOUNT` output from the genesis wallet pays the fee: the
-change parked by smaller requests. If none
+change parked by smaller requests, or one of the two fee seeds (`UTXO_SPLIT_AMOUNT / 2` each) every split mints. If none
 is free, one `large` output pays both.
 
 ### `GET /metrics`

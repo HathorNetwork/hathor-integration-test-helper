@@ -1,7 +1,10 @@
 import { TransactionTemplateBuilder } from "@hathor/wallet-lib/lib/template/transaction";
 import SendTransaction from "@hathor/wallet-lib/lib/new/sendTransaction";
 import type { ISendOutput } from "@hathor/wallet-lib/lib/new/sendTransaction";
-import { NATIVE_TOKEN_UID } from "@hathor/wallet-lib/lib/constants";
+import {
+  FEE_PER_FULL_SHIELDED_OUTPUT,
+  NATIVE_TOKEN_UID,
+} from "@hathor/wallet-lib/lib/constants";
 import { OutputKind } from "@hathor/wallet-lib/lib/shielded/types";
 import { getGenesisWallet, getGenesisAddress } from "./genesis.service";
 import {
@@ -284,12 +287,32 @@ export async function reserveLargeWithTimeout(
   }
 }
 
+/** Fee outputs each split mints for {@link reserveFeeFromWallet}. */
+const FEE_SEED_COUNT = 2;
+
+/**
+ * Size of each fee seed: half a test UTXO, so below the split amount (never
+ * pooled, never large) and far above any shielded fee. `null` when the split
+ * amount is too small for a seed to pay the largest fee (two fully shielded
+ * outputs).
+ */
+function feeSeedAmount(splitAmount: bigint): bigint | null {
+  const seed = splitAmount / 2n;
+  return seed >= FEE_PER_FULL_SHIELDED_OUTPUT * 2n ? seed : null;
+}
+
 /**
  * Split a large UTXO into many test-sized UTXOs.
  * Used at startup and whenever the pool runs low.
  *
  * Input:  1 large UTXO
- * Output: N × {genesisAddr, UTXO_SPLIT_AMOUNT} + 1 × {genesisAddr, change}
+ * Output: N × {genesisAddr, UTXO_SPLIT_AMOUNT}
+ *         + 2 × {genesisAddr, UTXO_SPLIT_AMOUNT / 2} (fee seeds)
+ *         + 1 × {genesisAddr, change}
+ *
+ * The fee seeds give default-size shielded funds a fee input even when no
+ * smaller fund has left change behind. They fit in the split amount that
+ * `maxOutputs` already keeps back from the test outputs.
  */
 export async function splitUtxo(utxo: Utxo): Promise<void> {
   if (splitInProgress) {
@@ -343,6 +366,12 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
         address: "{addr}",
         amount: splitAmount,
       });
+    }
+    const seedAmount = feeSeedAmount(splitAmount);
+    if (seedAmount !== null) {
+      for (let i = 0; i < FEE_SEED_COUNT; i++) {
+        builder.addTokenOutput({ address: "{addr}", amount: seedAmount });
+      }
     }
 
     builder.addCompleteAction({
