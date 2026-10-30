@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { JSONBigInt } from "@hathor/wallet-lib/lib/utils/bigint";
+import { ShieldedOutputMode } from "@hathor/wallet-lib/lib/shielded/types";
 import {
   populateFromUtxos,
   getReservedKeys,
@@ -18,6 +19,7 @@ import {
   __resetFundDepsForTest,
   type FundTemplateBuilder,
   type FundWallet,
+  type SendOutputsRequest,
 } from "../../src/split.service";
 import {
   handleStatus,
@@ -157,6 +159,37 @@ describe("POST /fund happy path and readiness", () => {
     // JSONBigInt round-trips small bigints back to plain JS numbers.
     expect(body).toHaveProperty("amount", 500);
     expect(body.utxoSource).toBe("test");
+  });
+
+  test("200 with a shielded amount sent to a shielded address", async () => {
+    const shieldedAddress = generateSimpleWallet().shieldedAddresses![0]!.shieldedBase58;
+    const sent: SendOutputsRequest[] = [];
+    __setFundDepsForTest({
+      getGenesisWallet: fakeWallet,
+      getGenesisAddress: () => genesisAddress,
+      newTemplateBuilder: fakeBuilder,
+      runSendTransaction: async () => {},
+      sendOutputs: async (_wallet, request) => {
+        sent.push(request);
+        return { hash: "shielded-fund-tx" };
+      },
+    });
+
+    const res = await handleFund(
+      fundRequest({ address: shieldedAddress, amount: 500, shielded: "amount" }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = JSONBigInt.parse(await res.text());
+    expect(body).toMatchObject({ txId: "shielded-fund-tx", amount: 500, shielded: "amount" });
+    expect(sent[0]!.outputs).toEqual([
+      {
+        address: shieldedAddress,
+        value: 500n,
+        token: "00",
+        shieldedMode: ShieldedOutputMode.AMOUNT_SHIELDED,
+      },
+    ]);
   });
 
   test("503 SERVICE_NOT_READY when genesis has not synced", async () => {

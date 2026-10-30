@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
 import { EventEmitter } from "node:events";
 import { ShieldedOutputMode } from "@hathor/wallet-lib/lib/shielded/types";
 import {
@@ -20,7 +20,7 @@ import {
   type FundWallet,
   type SendOutputsRequest,
 } from "../../src/split.service";
-import { PoolExhaustedError } from "../../src/errors";
+import { PoolExhaustedError, UtxoStaleError } from "../../src/errors";
 import { generateSimpleWallet } from "../../src/wallet.service";
 
 // DI seam, NOT mock.module (see CLAUDE.md): fakes for the genesis wallet,
@@ -39,6 +39,8 @@ let getUtxosCalls: GetUtxosOptions[] = [];
 let sendOutputsCalls: SendOutputsRequest[] = [];
 let templateSends = 0;
 let sendOutputsFailures: Error[] = [];
+/** Hash the fake send returns; `undefined` means a generated one. */
+let sendOutputsHash: string | null | undefined;
 /** Per-tx timestamps the fake wallet reports; unlisted txs are old. */
 let txTimestamps: Record<string, number> = {};
 
@@ -89,6 +91,7 @@ beforeEach(() => {
   sendOutputsCalls = [];
   templateSends = 0;
   sendOutputsFailures = [];
+  sendOutputsHash = undefined;
   txTimestamps = {};
   const w = makeWallet();
   __setFundDepsForTest({
@@ -102,7 +105,9 @@ beforeEach(() => {
       sendOutputsCalls.push(request);
       const failure = sendOutputsFailures.shift();
       if (failure) throw failure;
-      return { hash: `shielded-tx-${sendOutputsCalls.length}` };
+      return {
+        hash: sendOutputsHash === undefined ? `shielded-tx-${sendOutputsCalls.length}` : sendOutputsHash,
+      };
     },
   });
 });
@@ -183,17 +188,40 @@ describe("fundAddress with a shielded amount", () => {
   });
 
   test("skips a fee output created this second", async () => {
+    const nowSeconds = 1_800_000_000;
+    setSystemTime(new Date(nowSeconds * 1000 + 500));
+    try {
+      populateFromUtxos([{ txId: "test", index: 0, value: 1000n }]);
+      walletUtxos = [
+        { tx_id: "fresh-change", index: 0, amount: 10n },
+        { tx_id: "old-seed", index: 0, amount: 500n },
+      ];
+      // Spending it now would give the fund the same timestamp as its parent.
+      txTimestamps = { "fresh-change": nowSeconds, "old-seed": nowSeconds - 1 };
+
+      await fundAddress(SHIELDED, 1000n, "amount");
+
+      expect(sendOutputsCalls[0]!.inputs[1]).toEqual({ txId: "old-seed", index: 0 });
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("waits for a fresh fee output to mature when no large output is free", async () => {
     populateFromUtxos([{ txId: "test", index: 0, value: 1000n }]);
-    walletUtxos = [
-      { tx_id: "fresh-change", index: 0, amount: 10n },
-      { tx_id: "old-seed", index: 0, amount: 500n },
-    ];
-    // Spending it now would give the fund the same timestamp as its parent.
-    txTimestamps = { "fresh-change": Math.floor(Date.now() / 1000) + 1 };
+    walletUtxos = [{ tx_id: "seed", index: 0, amount: 500n }];
+    txTimestamps = { seed: Number.MAX_SAFE_INTEGER };
+    setTimeout(() => {
+      txTimestamps = {};
+    }, 10);
 
-    await fundAddress(SHIELDED, 1000n, "amount");
+    const result = await fundAddress(SHIELDED, 1000n, "amount", 2000);
 
-    expect(sendOutputsCalls[0]!.inputs[1]).toEqual({ txId: "old-seed", index: 0 });
+    expect(result.utxoSource).toBe("test");
+    expect(sendOutputsCalls[0]!.inputs).toEqual([
+      { txId: "test", index: 0 },
+      { txId: "seed", index: 0 },
+    ]);
   });
 
   test("a fund whose fee fits the test UTXO needs no fee input", async () => {
@@ -256,10 +284,46 @@ describe("fundAddress with a shielded amount", () => {
 
     expect(result.txId).toBe("shielded-tx-2");
     expect(sendOutputsCalls).toHaveLength(2);
+    // The rescan skipped the reserved test-1, so the retry draws test-2.
+    expect(sendOutputsCalls[1]!.inputs[0]).toEqual({ txId: "test-2", index: 0 });
     // The fee output was released before the retry, so it could be reused.
     expect(sendOutputsCalls[1]!.inputs[1]).toEqual({ txId: "fee", index: 0 });
     await settle();
     expect(getReservedKeys()).toHaveLength(0);
+  });
+
+  test("a second stale failure releases both inputs and pools neither", async () => {
+    populateFromUtxos([
+      { txId: "test-1", index: 0, value: 1000n },
+      { txId: "test-2", index: 0, value: 1000n },
+    ]);
+    walletUtxos = [
+      { tx_id: "test-1", index: 0, amount: 1000n },
+      { tx_id: "test-2", index: 0, amount: 1000n },
+      { tx_id: "fee", index: 0, amount: 500n },
+    ];
+    const stale = () => new Error("Transaction input has already been spent");
+    sendOutputsFailures = [stale(), stale()];
+
+    await expect(fundAddress(SHIELDED, 1000n, "amount")).rejects.toBeInstanceOf(
+      UtxoStaleError,
+    );
+    expect(sendOutputsCalls).toHaveLength(2);
+    expect(getReservedKeys()).toHaveLength(0);
+    // Neither attempt's test input went back: either may be the spent one.
+    expect(getPoolStats().testUtxos).toBe(0);
+  });
+
+  test("a send without a hash releases both inputs", async () => {
+    populateFromUtxos([{ txId: "test", index: 0, value: 1000n }]);
+    walletUtxos = [{ tx_id: "fee", index: 0, amount: 500n }];
+    sendOutputsHash = null;
+
+    await expect(fundAddress(SHIELDED, 1000n, "amount")).rejects.toThrow(
+      "Fund transaction completed without a hash",
+    );
+    expect(getReservedKeys()).toHaveLength(0);
+    expect(getPoolStats().testUtxos).toBe(0);
   });
 
   test("a non-stale failure returns the test input to the pool, not the fee input", async () => {
@@ -300,6 +364,17 @@ describe("fundAddress to a legacy address", () => {
     expect(result).toMatchObject({ txId: "template-tx", shielded: null });
     expect(templateSends).toBe(1);
     expect(sendOutputsCalls).toHaveLength(0);
+  });
+
+  test("refuses a shielded amount instead of sending it transparent", async () => {
+    populateFromUtxos([{ txId: "test", index: 0, value: 1000n }]);
+
+    await expect(fundAddress(LEGACY, 998n, "amount")).rejects.toThrow(
+      "Cannot send a shielded amount to non-shielded address",
+    );
+    expect(templateSends).toBe(0);
+    expect(getReservedKeys()).toHaveLength(0);
+    expect(getPoolStats().testUtxos).toBe(1);
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
 import { EventEmitter } from "node:events";
 import {
   populateFromUtxos,
@@ -100,7 +100,8 @@ describe("reserveLargeFromWallet", () => {
 
   // Wallet fake exposing only the getUtxos surface reserveLargeFromWallet uses;
   // it records the query options so we can assert the size filter is pushed down.
-  let txTimestamps: Record<string, number> = {};
+  /** Per-tx timestamps; `null` means the wallet can't date the tx. */
+  let txTimestamps: Record<string, number | null> = {};
 
   function makeQueryWallet(): FundWallet {
     return {
@@ -109,7 +110,8 @@ describe("reserveLargeFromWallet", () => {
         return { utxos: availableLarge };
       },
       async getTx(id: string) {
-        return { timestamp: txTimestamps[id] ?? 0 };
+        const timestamp = txTimestamps[id];
+        return timestamp === null ? null : { timestamp: timestamp ?? 0 };
       },
     } as unknown as FundWallet;
   }
@@ -124,15 +126,22 @@ describe("reserveLargeFromWallet", () => {
   test("skips an output whose tx is from this second", async () => {
     // Change from a fund sent moments ago: spending it in the same second
     // fails fullnode validation, so the next candidate is taken instead.
-    availableLarge = [
-      { tx_id: "fresh", index: 0, amount: 50000n },
-      { tx_id: "settled", index: 0, amount: 50000n },
-    ];
-    txTimestamps = { fresh: Math.floor(Date.now() / 1000) + 1 };
+    const nowSeconds = 1_800_000_000;
+    setSystemTime(new Date(nowSeconds * 1000 + 500));
+    try {
+      availableLarge = [
+        { tx_id: "fresh", index: 0, amount: 50000n },
+        { tx_id: "undated", index: 0, amount: 50000n },
+        { tx_id: "settled", index: 0, amount: 50000n },
+      ];
+      txTimestamps = { fresh: nowSeconds, undated: null, settled: nowSeconds - 1 };
 
-    const reserved = await reserveLargeFromWallet(30000n);
+      const reserved = await reserveLargeFromWallet(30000n);
 
-    expect(reserved!.utxo.txId).toBe("settled");
+      expect(reserved!.utxo.txId).toBe("settled");
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("pushes the size filter into the query and reserves a covering output", async () => {
