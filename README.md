@@ -193,8 +193,8 @@ test-wallet-helper:
 > On a healthy stack that window is seconds. The timeouts around it are
 > deliberately tight: genesis sync is capped at
 > `GENESIS_SYNC_TIMEOUT_MS` (default 60s) and each of the up-to-three
-> split attempts waits at most a minute for the block-reward height
-> lock, so the bootstrap reaches a verdict within a few minutes at worst
+> split attempts waits at most `REWARD_UNLOCK_TIMEOUT_MS` (default 60s)
+> for the block-reward height lock, so the bootstrap reaches a verdict within a few minutes at worst
 > rather than hanging. Size healthcheck `retries`/`start_period` against
 > that, and treat anything longer as a stack to debug, not to wait on.
 >

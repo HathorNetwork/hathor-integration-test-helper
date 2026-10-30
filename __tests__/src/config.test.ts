@@ -261,6 +261,14 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ GENESIS_SYNC_TIMEOUT_MS: "500" })).toThrow(ConfigError);
   });
 
+  test("REWARD_UNLOCK_TIMEOUT_MS defaults to 60000 and parses an override", () => {
+    expect(loadConfig({}, noWarn).REWARD_UNLOCK_TIMEOUT_MS).toBe(60_000);
+    expect(
+      loadConfig({ REWARD_UNLOCK_TIMEOUT_MS: "300000" }, noWarn).REWARD_UNLOCK_TIMEOUT_MS,
+    ).toBe(300_000);
+    expect(() => loadConfig({ REWARD_UNLOCK_TIMEOUT_MS: "500" })).toThrow(ConfigError);
+  });
+
   // Wallet-generation-only mode (FUNDING_ENABLED=false) must not fail on
   // funding-only config — the fullnode endpoints are never used there.
   test("funding disabled skips fullnode URL validation", () => {

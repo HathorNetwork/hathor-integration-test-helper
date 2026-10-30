@@ -300,7 +300,7 @@ export async function waitForRewardUnlock(
 ): Promise<void> {
   const pollIntervalMs = options.pollIntervalMs ?? 1_000;
   // A minute is enough because on a network that is producing blocks the
-  // lock clears in seconds; the rest is headroom for readability. A longer
+  // lock clears in seconds; the rest is headroom for slow blocks. A longer
   // wait cannot rescue a stack that has stopped producing blocks — it only
   // delays the `degraded` verdict a developer needs in order to start
   // debugging, while /ready and /fund report a transient reason throughout.
@@ -379,5 +379,7 @@ export async function waitForRewardUnlock(
  */
 export async function waitForUtxoUnlock(txId: string): Promise<void> {
   const w = getGenesisWallet();
-  await waitForRewardUnlock(w.storage, txId);
+  await waitForRewardUnlock(w.storage, txId, {
+    timeoutMs: config.REWARD_UNLOCK_TIMEOUT_MS,
+  });
 }
