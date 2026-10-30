@@ -77,10 +77,13 @@ it.
 **Only a signed tag on a signed commit deploys.** The workflow verifies
 both through GitHub's API and refuses anything else, so the release tag
 must be annotated *and* signed — `git tag -s`, not `git tag`. A
-lightweight tag carries no signature and is rejected outright. This is
-what makes the human touch load-bearing rather than conventional:
-ancestry proves the code was reviewed, the signature proves who asked
-for it to ship.
+lightweight tag carries no signature and is rejected outright. The tag
+object must also name the pushed tag and point at the commit being
+published. Ancestry proves the code was reviewed; the signature proves
+the release came from someone holding a signing key registered to a
+GitHub account, not merely a token that can push tags. It does not
+restrict *which* collaborator: anyone with tag-push rights and a
+registered key passes.
 
 Published versions are immutable. The workflow also refuses to publish
 a version that already exists on DockerHub, so re-releasing is never an

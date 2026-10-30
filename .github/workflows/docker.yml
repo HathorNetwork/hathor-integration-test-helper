@@ -1,10 +1,12 @@
 name: docker
 
 # Publishes the Docker image to DockerHub when a maintainer deliberately
-# pushes a `v*` version tag. The only gate is that the tagged commit must be
-# an ancestor of `main`: branch protection guarantees nothing reaches `main`
-# without passing CI and review, so "on main" already proves "CI is green".
-# We therefore do NOT re-run CI here.
+# pushes a `v*` version tag. Gates, in order: the tagged commit is an
+# ancestor of `main`, the tag is signed and points at that commit, the tag
+# matches `package.json`, and the version is not already published. Branch
+# protection guarantees nothing reaches `main` without passing CI and
+# review, so "on main" already proves "CI is green"; we do NOT re-run CI
+# here. CLAUDE.md's Releases section explains each gate.
 on:
   push:
     tags:
@@ -51,16 +53,20 @@ jobs:
             exit 1
           fi
 
-      # Ancestry proves the code was reviewed; this proves *who* asked for the
-      # release. Without it, anyone who can push a tag to this repository can
-      # publish a public image from any reviewed commit. Both objects are
-      # checked: a signed tag on an unsigned commit still means unreviewed
-      # provenance for the thing actually shipping.
+      # Ancestry proves the code was reviewed; this proves the release was
+      # requested by someone holding a signing key registered to a GitHub
+      # account, not just a token that can push tags (a stolen PAT, an agent
+      # session without the human's signing agent, a lightweight tag). It
+      # does not limit *which* account: any collaborator who can push a tag
+      # and has registered a key passes. The commit check is mostly
+      # redundant with ancestry, since main's merge commits are signed by
+      # GitHub, but it costs nothing.
       #
-      # Verification is read from GitHub's API rather than `git tag -v`, so
-      # trust follows the keys registered to the org's accounts instead of a
-      # keyring the runner would have to import (and that a workflow edit
-      # could quietly widen).
+      # The tag object is read once, and must name this tag and point at the
+      # commit being published, so a ref repointed at another signed tag
+      # mid-run cannot borrow its signature. Verification comes from
+      # GitHub's API rather than `git tag -v`, so the runner needs no keyring
+      # (which a workflow edit could quietly widen).
       - name: Require a signed tag on a signed commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,9 +85,16 @@ jobs:
           fi
 
           tag_sha="$(gh api "repos/${REPO}/git/ref/tags/${REF}" --jq '.object.sha')"
-          tag_verified="$(gh api "repos/${REPO}/git/tags/${tag_sha}" --jq '.verification.verified')"
-          if [ "$tag_verified" != "true" ]; then
-            reason="$(gh api "repos/${REPO}/git/tags/${tag_sha}" --jq '.verification.reason')"
+          tag_json="$(gh api "repos/${REPO}/git/tags/${tag_sha}")"
+          tag_name="$(jq -r '.tag' <<<"$tag_json")"
+          target_type="$(jq -r '.object.type' <<<"$tag_json")"
+          target_sha="$(jq -r '.object.sha' <<<"$tag_json")"
+          if [ "$tag_name" != "$REF" ] || [ "$target_type" != "commit" ] || [ "$target_sha" != "$COMMIT" ]; then
+            echo "::error::Tag object ${tag_sha} is '${tag_name}' -> ${target_type} ${target_sha}, not ${REF} -> commit ${COMMIT}. Refusing to publish."
+            exit 1
+          fi
+          if [ "$(jq -r '.verification.verified' <<<"$tag_json")" != "true" ]; then
+            reason="$(jq -r '.verification.reason' <<<"$tag_json")"
             echo "::error::Tag ${REF} is not a verified signature (reason: ${reason}). Refusing to publish."
             exit 1
           fi
