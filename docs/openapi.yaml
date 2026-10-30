@@ -194,11 +194,13 @@ paths:
         This is the endpoint to wire into a container `HEALTHCHECK` or a
         compose `depends_on: {condition: service_healthy}` gate.
 
-        Readiness gates on the genesis *wallet*, not the test pool: a single
-        UTXO query decides it, so `/ready` flips to `200` as soon as genesis
-        syncs to a funded wallet, even before the first split has filled the
-        pool. With `FUNDING_ENABLED=false` it reports `200 funding_disabled`
-        the moment the server is up.
+        Readiness requires the bootstrap to have seeded the pool and the
+        genesis wallet to hold spendable UTXOs. It answers `503
+        funding_initializing` until the first split has filled the pool;
+        after that the pool count is not consulted, so a drained pool that a
+        refill will top up does not flip it back. With
+        `FUNDING_ENABLED=false` it reports `200 funding_disabled` the moment
+        the server is up.
       parameters:
         - $ref: "#/components/parameters/TestName"
         - $ref: "#/components/parameters/RequestId"
@@ -444,7 +446,7 @@ paths:
                 initializing:
                   value:
                     error: SERVICE_NOT_READY
-                    message: funding subsystem is still initializing
+                    message: "funding subsystem is not ready (phase: initializing)"
                     retryable: true
                 degraded:
                   value:
@@ -724,9 +726,10 @@ components:
             which is why `funds_query_error` precedes `wallet_unfunded` — a
             failed query never reaches the funded/unfunded decision.
 
-            `POST /fund` refuses for exactly the phases that report
-            `funding_initializing` or `funding_degraded`, so a client that
-            waits for `/ready` can never race the bootstrap's initial split.
+            `POST /fund` refuses with `503` wherever `/ready` reports
+            `genesis_wallet_not_ready`, `funding_initializing` or
+            `funding_degraded`, so a client that waits for `/ready` can never
+            race the bootstrap's initial split.
           enum:
             - funding_disabled
             - genesis_wallet_not_ready

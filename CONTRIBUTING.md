@@ -19,8 +19,8 @@ Editing `docs/openapi.yaml` additionally needs:
 bun run validate:openapi
 ```
 
-It is kept out of `bun run check` because it fetches the validator over
-the network; CI runs it as its own job.
+CI runs it as a separate job, so a spec error is reported apart from
+unit-test failures.
 
 Integration tests are optional locally and require Docker:
 
