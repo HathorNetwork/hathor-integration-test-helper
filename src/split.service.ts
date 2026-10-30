@@ -1,9 +1,12 @@
 import { TransactionTemplateBuilder } from "@hathor/wallet-lib/lib/template/transaction";
 import SendTransaction from "@hathor/wallet-lib/lib/new/sendTransaction";
+import type { ISendOutput } from "@hathor/wallet-lib/lib/new/sendTransaction";
 import { NATIVE_TOKEN_UID } from "@hathor/wallet-lib/lib/constants";
+import { OutputKind } from "@hathor/wallet-lib/lib/shielded/types";
 import { getGenesisWallet, getGenesisAddress } from "./genesis.service";
 import {
   addTestUtxos,
+  reserveFee,
   reserveLarge,
   releaseReservation,
   populateFromUtxos,
@@ -59,12 +62,27 @@ export interface FundWallet extends TxObservationWallet {
   ): Promise<{ utxos: Array<{ tx_id: string; index: number; amount: bigint }> }>;
 }
 
+/** Explicit-input send: what a template can't express (shielded outputs). */
+export interface SendOutputsRequest {
+  outputs: ISendOutput[];
+  inputs: Array<{ txId: string; index: number }>;
+  changeAddress: string;
+}
+
 /** The external collaborators the fund/split services depend on. */
 export interface FundServiceDeps {
   getGenesisWallet: () => FundWallet;
   getGenesisAddress: () => string;
   newTemplateBuilder: () => FundTemplateBuilder;
   runSendTransaction: (wallet: unknown, transaction: unknown) => Promise<void>;
+  /**
+   * Build, sign, mine and push a tx spending exactly `inputs`, with transparent
+   * change. Resolves with the sent tx's hash.
+   */
+  sendOutputs: (
+    wallet: unknown,
+    request: SendOutputsRequest,
+  ) => Promise<{ hash?: string | null }>;
 }
 
 /** Production wiring: real genesis wallet + wallet-lib builder/sender. */
@@ -79,6 +97,18 @@ function defaultDeps(): FundServiceDeps {
         { wallet, transaction } as ConstructorParameters<typeof SendTransaction>[0],
       );
       await sendTx.runFromMining();
+    },
+    sendOutputs: async (wallet, { outputs, inputs, changeAddress }) => {
+      const sendTx = new SendTransaction({
+        wallet,
+        outputs,
+        inputs,
+        changeAddress,
+        // Keep change transparent: the wallet rediscovers it as a plain output.
+        changeShieldedMode: OutputKind.TRANSPARENT,
+        pin: config.WALLET_PIN_CODE,
+      } as ConstructorParameters<typeof SendTransaction>[0]);
+      return sendTx.run();
     },
   };
 }
@@ -175,6 +205,38 @@ export async function reserveLargeFromWallet(
   });
   for (const u of utxos) {
     const reserved = reserveLarge({ txId: u.tx_id, index: u.index, amount: u.amount });
+    if (reserved !== null) {
+      return reserved;
+    }
+  }
+  return null;
+}
+
+/**
+ * Query the genesis wallet for the smallest available below-split output of at
+ * least `minAmount` and reserve it to pay a shielded fund's fee. Returns `null`
+ * when none is free.
+ *
+ * Below-split outputs are what the pool otherwise ignores: change from funds
+ * smaller than `UTXO_SPLIT_AMOUNT`, and the fee seeds each split mints. Paying
+ * a fee spends one and leaves its remainder as another, so they keep serving
+ * fees. The smallest covering output is taken so larger ones stay usable.
+ */
+export async function reserveFeeFromWallet(
+  minAmount: bigint,
+): Promise<ReservedUtxo | null> {
+  const wallet = deps.getGenesisWallet();
+  const { utxos } = await wallet.getUtxos({
+    token: NATIVE_TOKEN_UID,
+    amount_bigger_than: minAmount - 1n,
+    amount_smaller_than: config.UTXO_SPLIT_AMOUNT,
+    only_available_utxos: true,
+  });
+  const bySize = [...utxos].sort((a, b) =>
+    a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0,
+  );
+  for (const u of bySize) {
+    const reserved = reserveFee({ txId: u.tx_id, index: u.index, amount: u.amount });
     if (reserved !== null) {
       return reserved;
     }

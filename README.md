@@ -51,10 +51,16 @@ Request body (`application/json`):
 
 | Field     | Required | Type            | Meaning                                          |
 | --------- | -------- | --------------- | ------------------------------------------------ |
-| `address` | yes      | string          | Destination Hathor address (validated for the configured network) |
+| `address` | yes      | string          | Destination Hathor address, legacy or shielded (validated for the configured network) |
 | `amount`  | no       | number \| digit-string | Amount in the smallest unit; defaults to `UTXO_SPLIT_AMOUNT`. Use a digit-only string for values beyond the JS safe-integer range |
+| `shielded` | no      | `"amount"` \| `"full"` \| `null` | Send a shielded output: `amount` hides the value, `full` hides the value and the token. Requires a shielded `address` and `2 <= amount < 2^40`. Omitted or `null` sends a transparent output, to either address kind |
 
-Success (`200`): `{ "txId": "...", "amount": 1000, "utxoSource": "test" \| "large" }`.
+Success (`200`): `{ "txId": "...", "amount": 1000, "utxoSource": "test" \| "large", "shielded": "amount" \| "full" \| null }`.
+
+A shielded output costs a fee (2 units for `amount`, 4 for `full`: wallet-lib
+always splits it into two shielded outputs). The helper pays it; the recipient
+receives exactly `amount`. Change always returns transparent to the genesis
+wallet.
 
 Error body (all failures): `{ "error": <code>, "message": <text>, "retryable": <bool> }`.
 
@@ -99,6 +105,13 @@ specifically needs a different value.
 `large` requests never draw on the pool, so they cannot exhaust it — they
 compete instead for the genesis wallet's large outputs, and wait up to
 `FUND_TIMEOUT_MS` for one before returning `409 FUND_TIMEOUT`.
+
+For a shielded request the rows above apply to `amount` plus the fee, with
+one exception. When `amount` fits a pool UTXO but the fee doesn't (e.g. a
+default-size shielded fund), the pool UTXO pays the amount and a second,
+below-`UTXO_SPLIT_AMOUNT` output from the genesis wallet pays the fee: the
+change parked by smaller requests. If none
+is free, one `large` output pays both.
 
 ### `GET /metrics`
 

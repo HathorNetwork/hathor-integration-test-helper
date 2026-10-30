@@ -54,8 +54,11 @@ export interface Utxo {
   readonly amount: bigint;
 }
 
-/** Which pool source a reserved UTXO was drawn from. */
-export type UtxoSource = "test" | "large";
+/**
+ * Which pool source a reserved UTXO was drawn from. `fee` is a below-split
+ * output reserved to pay a shielded fund's fee beside a test input.
+ */
+export type UtxoSource = "test" | "large" | "fee";
 
 /**
  * A UTXO reserved for a funding transaction, tagged with its source.
@@ -280,6 +283,30 @@ export function reserveLarge(utxo: Utxo): ReservedUtxo | null {
   }
   markReserved(utxo);
   return { utxo, source: "large" };
+}
+
+/**
+ * Reserve a below-split output the caller selected from a live wallet query,
+ * to pay a shielded fund's fee. Same synchronous claim as {@link reserveLarge};
+ * returns `null` when the output is not below `UTXO_SPLIT_AMOUNT` (test-sized
+ * outputs belong to the bucket, larger ones to large funding) or is already
+ * in-flight. Below-split outputs are never pooled, so the claim cannot break
+ * the available-XOR-reserved invariant.
+ */
+export function reserveFee(utxo: Utxo): ReservedUtxo | null {
+  const key = utxoKey(utxo);
+  if (utxo.amount >= config.UTXO_SPLIT_AMOUNT) {
+    logger.warn({
+      event: "utxo_pool.non_fee_reserve_rejected",
+      meta: { key, amount: utxo.amount.toString() },
+    });
+    return null;
+  }
+  if (reservedSet.has(key)) {
+    return null;
+  }
+  markReserved(utxo);
+  return { utxo, source: "fee" };
 }
 
 /**

@@ -7,11 +7,21 @@ import {
   type ReservedUtxo,
   type UtxoSource,
 } from "./utxo-pool.service";
+import type { ISendOutput } from "@hathor/wallet-lib/lib/new/sendTransaction";
+import {
+  FEE_PER_AMOUNT_SHIELDED_OUTPUT,
+  FEE_PER_FULL_SHIELDED_OUTPUT,
+  NATIVE_TOKEN_UID,
+} from "@hathor/wallet-lib/lib/constants";
+import { ShieldedOutputMode } from "@hathor/wallet-lib/lib/shielded/types";
 import { config } from "./config";
+import { isShieldedHathorAddress } from "./address";
+import type { ShieldedFundMode } from "./parse-fund-body";
 import { logger } from "./logger";
 import { recordRescan, recordRefillFailure } from "./metrics";
 import {
   getFundDeps,
+  reserveFeeFromWallet,
   reserveLargeFromWallet,
   reserveLargeWithTimeout,
   splitUtxo,
@@ -20,7 +30,6 @@ import {
   isSplitInProgress,
   getSplitStatus,
   __resetSplitStateForTest,
-  type FundWallet,
 } from "./split.service";
 import {
   PoolExhaustedError,
@@ -126,7 +135,10 @@ export interface FundResult {
    * for what settled is `txId` on the fullnode.
    */
   amount: bigint;
+  /** Source of the input that funded the amount (a fee input isn't reported). */
   utxoSource: UtxoSource;
+  /** The requested shielding, echoed back; `null` for a transparent output. */
+  shielded: ShieldedFundMode | null;
 }
 
 /**
@@ -242,6 +254,7 @@ function isStaleUtxoError(err: unknown): boolean {
 export async function fundAddress(
   address: string,
   amount: bigint,
+  shielded: ShieldedFundMode | null = null,
   largeWaitMs: number = config.FUND_TIMEOUT_MS,
 ): Promise<FundResult> {
   const pendingRescan = rescanInProgress;
@@ -255,51 +268,114 @@ export async function fundAddress(
     await pendingRescan.catch(() => {});
   }
 
-  return attemptFund(address, amount, 1, largeWaitMs);
+  return attemptFund(address, amount, shielded, 1, largeWaitMs);
 }
 
-/** Internal: reserve a UTXO, build and send the tx, retrying once on stale-UTXO errors. */
+/**
+ * Fee the genesis wallet pays for a /fund output. A transparent output is
+ * free. wallet-lib never sends a lone shielded output (it splits it in two to
+ * avoid leaking the value), so a shielded fund pays for two shielded outputs.
+ */
+export function shieldedFundFee(shielded: ShieldedFundMode | null): bigint {
+  if (shielded === null) return 0n;
+  const perOutput =
+    shielded === "full" ? FEE_PER_FULL_SHIELDED_OUTPUT : FEE_PER_AMOUNT_SHIELDED_OUTPUT;
+  return perOutput * 2n;
+}
+
+/** Reserve a test UTXO, mapping an empty pool to the RFC's responses. */
+function reserveStandard(amount: bigint): ReservedUtxo {
+  try {
+    return reserveUtxo(amount);
+  } catch (err) {
+    if (err instanceof PoolExhaustedError) {
+      // RFC: when a small-amount reservation fails because the test pool is
+      // empty AND a split is currently running, surface SPLIT_IN_PROGRESS so
+      // clients see "pool will refill shortly" rather than "exhausted, give
+      // up". The running split is itself the refill, so don't schedule one.
+      if (isSplitInProgress()) {
+        throw new SplitInProgressError();
+      }
+      // Otherwise nothing else will refill the pool. The success-path trigger
+      // in attemptFund is unreachable while every request fails here, the
+      // bootstrap split runs once (its promise is memoized), and a rescan only
+      // happens on the stale path — so without this the pool stays at zero and
+      // every request answers POOL_EXHAUSTED forever.
+      triggerBackgroundRefill();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Reserve the inputs that pay `amount` plus the shielded fee. The first input
+ * is the primary one, whose source the response reports.
+ *
+ *  - Everything fits a test UTXO: that UTXO alone.
+ *  - The amount fits a test UTXO but the fee doesn't (a default-size shielded
+ *    fund): that UTXO plus a below-split fee output from the wallet.
+ *  - Otherwise, or when no fee output is free: one large output covering
+ *    both, waiting up to `largeWaitMs` (RFC: large requests queue for a refill
+ *    rather than failing immediately).
+ */
+async function reserveInputs(
+  amount: bigint,
+  shielded: ShieldedFundMode | null,
+  largeWaitMs: number,
+): Promise<ReservedUtxo[]> {
+  const total = amount + shieldedFundFee(shielded);
+  if (total <= config.UTXO_SPLIT_AMOUNT) {
+    return [reserveStandard(total)];
+  }
+  if (amount <= config.UTXO_SPLIT_AMOUNT) {
+    // The test UTXO's change covers part of the fee; the fee input the rest.
+    const feeInput = await reserveFeeFromWallet(total - config.UTXO_SPLIT_AMOUNT);
+    if (feeInput !== null) {
+      try {
+        return [reserveStandard(amount), feeInput];
+      } catch (err) {
+        releaseReservation(feeInput.utxo);
+        throw err;
+      }
+    }
+  }
+  const large = await reserveLargeWithTimeout(total, largeWaitMs);
+  if (large === null) {
+    throw new FundTimeoutError(largeWaitMs);
+  }
+  return [large];
+}
+
+/** Recipient output for an explicit-input send. */
+function fundOutput(
+  address: string,
+  amount: bigint,
+  shielded: ShieldedFundMode | null,
+): ISendOutput {
+  const output = { address, value: amount, token: NATIVE_TOKEN_UID };
+  if (shielded === null) return output;
+  return {
+    ...output,
+    shieldedMode:
+      shielded === "full"
+        ? ShieldedOutputMode.FULLY_SHIELDED
+        : ShieldedOutputMode.AMOUNT_SHIELDED,
+  };
+}
+
+/** Internal: reserve inputs, build and send the tx, retrying once on stale-UTXO errors. */
 async function attemptFund(
   address: string,
   amount: bigint,
+  shielded: ShieldedFundMode | null,
   retriesLeft: number,
   largeWaitMs: number,
 ): Promise<FundResult> {
-  let reserved: ReservedUtxo;
-  if (amount <= config.UTXO_SPLIT_AMOUNT) {
-    // Standard request: reserve synchronously from the test bucket.
-    try {
-      reserved = reserveUtxo(amount);
-    } catch (err) {
-      if (err instanceof PoolExhaustedError) {
-        // RFC: when a small-amount reservation fails because the test pool is
-        // empty AND a split is currently running, surface SPLIT_IN_PROGRESS so
-        // clients see "pool will refill shortly" rather than "exhausted, give
-        // up". The running split is itself the refill, so don't schedule one.
-        if (isSplitInProgress()) {
-          throw new SplitInProgressError();
-        }
-        // Otherwise nothing else will refill the pool. The success-path trigger
-        // below is unreachable while every request fails here, the bootstrap
-        // split runs once (its promise is memoized), and a rescan only happens
-        // on the stale path — so without this the pool stays at zero and every
-        // request answers POOL_EXHAUSTED forever.
-        triggerBackgroundRefill();
-      }
-      throw err;
-    }
-  } else {
-    // Large request: the pool serves only test-sized amounts, so source it
-    // from the wallet, waiting up to FUND_TIMEOUT_MS for a covering output to
-    // become available (RFC: large requests queue for a refill rather than
-    // failing immediately).
-    const large = await reserveLargeWithTimeout(amount, largeWaitMs);
-    if (large === null) {
-      throw new FundTimeoutError(largeWaitMs);
-    }
-    reserved = large;
-  }
-  const { utxo, source: utxoSource } = reserved;
+  const inputs = await reserveInputs(amount, shielded, largeWaitMs);
+  const utxoSource = inputs[0]!.source;
+  const releaseAll = () => {
+    for (const input of inputs) releaseReservation(input.utxo);
+  };
 
   const deps = getFundDeps();
   const wallet = deps.getGenesisWallet();
@@ -307,87 +383,109 @@ async function attemptFund(
 
   // Everything after the reservation is release-guarded: build, sign, and
   // broadcast can each throw (bad pin, wallet-lib error, mining rejection),
-  // and a throw outside the guard would strand `utxo` in reservedSet forever
-  // (rescan and admitToPool both skip reserved keys, so it never heals).
-  let tx: Awaited<ReturnType<FundWallet["buildTxTemplate"]>>;
+  // and a throw outside the guard would strand the inputs in reservedSet
+  // forever (rescan and admitToPool both skip reserved keys, so they never
+  // heal).
+  let txId: string | null | undefined;
   try {
-    const builder = deps.newTemplateBuilder()
-      .addSetVarAction({ name: "recipient", value: address })
-      .addSetVarAction({ name: "change", value: genesisAddr })
-      .addRawInput({ txId: utxo.txId, index: utxo.index })
-      .addTokenOutput({
-        address: "{recipient}",
-        amount,
-      })
-      .addCompleteAction({
-        changeAddress: "{change}",
-        skipSelection: true,
+    if (isShieldedHathorAddress(address)) {
+      // Templates are transparent-only and can't pay to a shielded address,
+      // so these go through an explicit-input send.
+      const sent = await deps.sendOutputs(wallet, {
+        outputs: [fundOutput(address, amount, shielded)],
+        inputs: inputs.map(({ utxo }) => ({ txId: utxo.txId, index: utxo.index })),
+        changeAddress: genesisAddr,
+      });
+      txId = sent.hash;
+    } else {
+      // A legacy address is never shielded (parseFundBody enforces it), so
+      // there is no fee and exactly one input.
+      const { utxo } = inputs[0]!;
+      const builder = deps.newTemplateBuilder()
+        .addSetVarAction({ name: "recipient", value: address })
+        .addSetVarAction({ name: "change", value: genesisAddr })
+        .addRawInput({ txId: utxo.txId, index: utxo.index })
+        .addTokenOutput({
+          address: "{recipient}",
+          amount,
+        })
+        .addCompleteAction({
+          changeAddress: "{change}",
+          skipSelection: true,
+        });
+
+      const template = builder.build();
+      const tx = await wallet.buildTxTemplate(template, {
+        signTx: true,
+        pinCode: config.WALLET_PIN_CODE,
       });
 
-    const template = builder.build();
-    tx = await wallet.buildTxTemplate(template, {
-      signTx: true,
-      pinCode: config.WALLET_PIN_CODE,
-    });
-
-    await deps.runSendTransaction(wallet, tx);
+      await deps.runSendTransaction(wallet, tx);
+      txId = tx.hash;
+    }
   } catch (err) {
     if (retriesLeft > 0 && isStaleUtxoError(err)) {
       logger.warn({
         event: "fund.stale_utxo",
-        meta: { txId: utxo.txId, index: utxo.index, retriesLeft },
+        meta: {
+          inputs: inputs.map(({ utxo }) => `${utxo.txId}:${utxo.index}`),
+          retriesLeft,
+        },
       });
-      // Hold the reservation *across* the rescan, then release. The stale
+      // Hold the reservations *across* the rescan, then release. The stale
       // verdict comes from the fullnode, which sees an external spend before
       // the wallet's own UTXO store does, so `only_available_utxos` will often
-      // still report this output as available — releasing first would let
+      // still report a spent input as available — releasing first would let
       // populateFromUtxos re-pool a known-spent UTXO for the retry (and any
       // concurrent request) to trip over again. Reserved keys are skipped by
-      // the rescan, so holding it is what keeps it out; releasing straight
-      // after keeps it from stranding in reservedSet.
+      // the rescan, so holding them is what keeps them out; releasing straight
+      // after keeps them from stranding in reservedSet. With two inputs the
+      // error doesn't say which was spent; both are released, and the wallet
+      // stops offering the spent one once it observes the spend.
       //
       // Rescan failure is swallowed for the same reason fundAddress swallows it
       // for coalesced waiters: best-effort pool repair must not convert a
       // retryable UTXO_STALE into a non-retryable 500. The retry still runs, and
       // a second stale surfaces the documented UtxoStaleError below.
       await rescanUtxoPool().catch(() => {});
-      releaseReservation(utxo);
-      return attemptFund(address, amount, retriesLeft - 1, largeWaitMs);
+      releaseAll();
+      return attemptFund(address, amount, shielded, retriesLeft - 1, largeWaitMs);
     }
-    releaseReservation(utxo);
+    releaseAll();
     if (isStaleUtxoError(err)) {
-      // Stale on the final attempt — RFC's UTXO_STALE response. The UTXO was
-      // spent externally, so it must NOT be returned to the pool: re-pooling a
-      // spent output would just fail the next request stale again.
+      // Stale on the final attempt — RFC's UTXO_STALE response. A spent UTXO
+      // must NOT be returned to the pool: re-pooling a spent output would just
+      // fail the next request stale again.
       throw new UtxoStaleError(
         err instanceof Error ? err.message : "Reserved UTXO was already spent",
         { cause: err },
       );
     }
-    // Build/sign/broadcast failed but the UTXO was never spent. A test-sized
-    // input goes straight back to the pool for immediate reuse. A large input
-    // is release-only: the pool never holds large outputs (returnChange would
-    // warn and drop it), and the next wallet query rediscovers it on-chain.
-    if (utxoSource === "test") {
-      returnChange(utxo);
+    // Build/sign/broadcast failed but nothing was spent. A test-sized input
+    // goes straight back to the pool for immediate reuse. Large and fee
+    // inputs are release-only: the pool never holds them, and the next wallet
+    // query rediscovers them on-chain.
+    for (const input of inputs) {
+      if (input.source === "test") returnChange(input.utxo);
     }
     throw err;
   }
 
-  const txId = tx.hash;
   if (!txId) {
-    // The send resolved but the built tx has no hash: we cannot observe the
+    // The send resolved but the tx has no hash: we cannot observe the
     // spending tx, so we can't defer the release. Release now and do NOT
     // returnChange a possibly-spent output. This can't re-introduce a spent
     // UTXO: repopulation pools only the wallet's *available* set, so a rescan
     // won't re-pool an input the broadcast already spent. Holding it reserved
     // forever is worse — reserved keys are skipped by rescan/admit and never heal.
-    releaseReservation(utxo);
+    releaseAll();
     logger.error({ event: "fund.missing_tx_hash" });
     throw new Error("Fund transaction completed without a hash");
   }
 
-  scheduleReservationRelease(wallet, utxo, txId, "fund");
+  for (const input of inputs) {
+    scheduleReservationRelease(wallet, input.utxo, txId, "fund");
+  }
 
   // Genesis change is deliberately NOT re-pooled here.
   //
@@ -404,13 +502,14 @@ async function attemptFund(
   //
   // The change stays on-chain in the genesis wallet and is rediscovered by the
   // next repopulatePoolFromWallet (rescan or refill), which pools only outputs
-  // the wallet itself reports as available.
+  // the wallet itself reports as available. Below-split change is also what
+  // reserveFeeFromWallet draws shielded fees from.
 
   if (needsRefill()) {
     triggerBackgroundRefill();
   }
 
-  return { txId, amount, utxoSource };
+  return { txId, amount, utxoSource, shielded };
 }
 
 /**

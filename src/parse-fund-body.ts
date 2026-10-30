@@ -1,6 +1,13 @@
+import { MAX_SHIELDED_OUTPUT_VALUE } from "@hathor/wallet-lib/lib/constants";
 import { config } from "./config";
-import { isValidHathorAddress } from "./address";
+import { isShieldedHathorAddress, isValidHathorAddress } from "./address";
 import { jsonErrorFromCode } from "./http";
+
+/**
+ * How a /fund output hides its contents: `amount` hides the value,
+ * `full` hides the value and the token.
+ */
+export type ShieldedFundMode = "amount" | "full";
 
 /**
  * Successful result of parsing a /fund request body.
@@ -8,6 +15,8 @@ import { jsonErrorFromCode } from "./http";
 export interface ParsedFundBody {
   address: string;
   amount: bigint;
+  /** `null` sends a transparent output. */
+  shielded: ShieldedFundMode | null;
 }
 
 function invalid(message: string, status = 400): Response {
@@ -28,7 +37,10 @@ function invalid(message: string, status = 400): Response {
  *
  * Rules:
  * - `address` is required, must be a non-empty string (whitespace-trimmed).
- *   It must also be a valid Hathor address for the configured network.
+ *   It must also be a valid Hathor address (legacy or shielded) for the
+ *   configured network.
+ * - `shielded`: undefined/null -> transparent; `"amount"` or `"full"`
+ *   -> shielded output, which requires a shielded `address`.
  * - `amount`:
  *   - undefined/null -> default `config.UTXO_SPLIT_AMOUNT`
  *   - number -> must be finite, positive, integer, and safe JS integer
@@ -86,9 +98,10 @@ export async function parseFundBody(
     return invalid("body must be a JSON object");
   }
 
-  const { address, amount: rawAmount } = parsed as {
+  const { address, amount: rawAmount, shielded: rawShielded } = parsed as {
     address?: unknown;
     amount?: unknown;
+    shielded?: unknown;
   };
 
   if (!address || typeof address !== "string" || address.trim() === "") {
@@ -128,5 +141,28 @@ export async function parseFundBody(
     return invalid("amount must be a positive integer");
   }
 
-  return { address: normalizedAddress, amount };
+  let shielded: ShieldedFundMode | null;
+  if (rawShielded === undefined || rawShielded === null) {
+    shielded = null;
+  } else if (rawShielded === "amount" || rawShielded === "full") {
+    shielded = rawShielded;
+  } else {
+    return invalid('shielded must be "amount", "full" or null');
+  }
+
+  if (shielded && !isShieldedHathorAddress(normalizedAddress)) {
+    return invalid("a shielded output requires a shielded address");
+  }
+  // wallet-lib splits a lone shielded output in two, and one unit can't split.
+  if (shielded && amount < 2n) {
+    return invalid("a shielded amount must be at least 2");
+  }
+  // The range proof caps a shielded value.
+  if (shielded && amount >= MAX_SHIELDED_OUTPUT_VALUE) {
+    return invalid(
+      `a shielded amount must be below ${MAX_SHIELDED_OUTPUT_VALUE}`,
+    );
+  }
+
+  return { address: normalizedAddress, amount, shielded };
 }

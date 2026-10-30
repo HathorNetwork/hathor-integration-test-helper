@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { isValidHathorAddress } from "../../src/address";
+import { isShieldedHathorAddress, isValidHathorAddress } from "../../src/address";
+import { generateSimpleWallet } from "../../src/wallet.service";
 
 describe("isValidHathorAddress", () => {
   test("rejects empty string", () => {
@@ -30,5 +31,20 @@ describe("isValidHathorAddress", () => {
     // test red, instead of silently downgrading every wallet endpoint
     // in PR2 to "INVALID_REQUEST".
     expect(isValidHathorAddress("WewDeXWyvHP7jJTs7tjLoQfoB72LLxJQqN")).toBe(true);
+  });
+});
+
+describe("isShieldedHathorAddress", () => {
+  const wallet = generateSimpleWallet();
+
+  test("accepts a shielded address", () => {
+    const shielded = wallet.shieldedAddresses![0]!.shieldedBase58;
+    expect(isValidHathorAddress(shielded)).toBe(true);
+    expect(isShieldedHathorAddress(shielded)).toBe(true);
+  });
+
+  test("rejects a legacy address and garbage", () => {
+    expect(isShieldedHathorAddress(wallet.addresses[0]!)).toBe(false);
+    expect(isShieldedHathorAddress("not-an-address")).toBe(false);
   });
 });
