@@ -3,6 +3,7 @@ import SendTransaction from "@hathor/wallet-lib/lib/new/sendTransaction";
 import type { ISendOutput } from "@hathor/wallet-lib/lib/new/sendTransaction";
 import {
   FEE_PER_FULL_SHIELDED_OUTPUT,
+  MAX_OUTPUTS,
   NATIVE_TOKEN_UID,
 } from "@hathor/wallet-lib/lib/constants";
 import { OutputKind } from "@hathor/wallet-lib/lib/shielded/types";
@@ -325,6 +326,24 @@ function feeSeedAmount(splitAmount: bigint): bigint | null {
 }
 
 /**
+ * How many test outputs a split of `inputAmount` mints: the configured count,
+ * capped so the seeds and the change output still fit the tx's output limit,
+ * and so one split amount stays back for the seeds and change.
+ */
+export function splitOutputCount(
+  inputAmount: bigint,
+  splitAmount: bigint,
+  configuredCount: number,
+  seedCount: number,
+): number {
+  return Math.min(
+    configuredCount,
+    MAX_OUTPUTS - seedCount - 1,
+    Number(inputAmount / splitAmount) - 1,
+  );
+}
+
+/**
  * Split a large UTXO into many test-sized UTXOs.
  * Used at startup and whenever the pool runs low.
  *
@@ -353,9 +372,13 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
     const genesisAddr = deps.getGenesisAddress();
     const splitAmount = config.UTXO_SPLIT_AMOUNT;
 
-    const maxOutputs = Math.min(
+    const seedAmount = feeSeedAmount(splitAmount);
+    const seedCount = seedAmount === null ? 0 : FEE_SEED_COUNT;
+    const maxOutputs = splitOutputCount(
+      utxo.amount,
+      splitAmount,
       config.UTXO_SPLIT_COUNT,
-      Number(utxo.amount / splitAmount) - 1,
+      seedCount,
     );
 
     if (maxOutputs < 1) {
@@ -390,9 +413,8 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
         amount: splitAmount,
       });
     }
-    const seedAmount = feeSeedAmount(splitAmount);
     if (seedAmount !== null) {
-      for (let i = 0; i < FEE_SEED_COUNT; i++) {
+      for (let i = 0; i < seedCount; i++) {
         builder.addTokenOutput({ address: "{addr}", amount: seedAmount });
       }
     }

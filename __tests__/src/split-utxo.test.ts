@@ -11,6 +11,7 @@ import {
 import { __resetFundStateForTest } from "../../src/fund.service";
 import {
   splitUtxo,
+  splitOutputCount,
   getSplitStatus,
   __setFundDepsForTest,
   __resetFundDepsForTest,
@@ -112,6 +113,16 @@ describe("splitUtxo", () => {
     expect(builtOutputs).toEqual([...Array(10).fill(1000n), 500n, 500n]);
     // Seeds are below the split amount, so they are never pooled.
     expect(getPoolStats().testUtxos).toBe(10);
+  });
+
+  test("keeps seeds and change within the 255-output limit", () => {
+    const genesisSized = 10_000_000n * 1000n;
+    // 254 is the largest UTXO_SPLIT_COUNT config accepts.
+    expect(splitOutputCount(genesisSized, 1000n, 254, 2)).toBe(252);
+    expect(splitOutputCount(genesisSized, 1000n, 254, 0)).toBe(254);
+    expect(splitOutputCount(genesisSized, 1000n, 100, 2)).toBe(100);
+    // One split amount stays back for the seeds and change.
+    expect(splitOutputCount(11_000n, 1000n, 100, 2)).toBe(10);
   });
 
   test("drops the input as dust when too small to split", async () => {

@@ -283,6 +283,8 @@ export function loadConfig(
     issues,
     { min: 1n },
   );
+  // 254 test outputs + change fill a tx's 255 outputs. When splits mint fee
+  // seeds, they take two of those slots and a split mints at most 252.
   const UTXO_SPLIT_COUNT = parseIntEnv(
     env,
     "UTXO_SPLIT_COUNT",
