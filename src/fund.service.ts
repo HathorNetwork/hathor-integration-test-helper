@@ -414,7 +414,11 @@ async function attemptFund(
       txId = sent.hash;
     } else {
       // A legacy address is never shielded (parseFundBody enforces it), so
-      // there is no fee and exactly one input.
+      // there is no fee and exactly one input. Refuse rather than send a
+      // shielded request out transparent.
+      if (shielded !== null) {
+        throw new Error(`Cannot send a shielded amount to non-shielded address ${address}`);
+      }
       const { utxo } = inputs[0]!;
       const builder = deps.newTemplateBuilder()
         .addSetVarAction({ name: "recipient", value: address })

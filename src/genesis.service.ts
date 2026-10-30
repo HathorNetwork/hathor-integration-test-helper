@@ -3,7 +3,6 @@ import WalletConnection from "@hathor/wallet-lib/lib/new/connection";
 import walletLibConfig from "@hathor/wallet-lib/lib/config";
 import { TX_WEIGHT_CONSTANTS, NATIVE_TOKEN_UID } from "@hathor/wallet-lib/lib/constants";
 import Transaction from "@hathor/wallet-lib/lib/models/transaction";
-import { createDefaultShieldedCryptoProvider } from "@hathor/ct-crypto-node/provider";
 import { config } from "./config";
 import { logger } from "./logger";
 
@@ -96,7 +95,11 @@ export async function initGenesisWallet(): Promise<void> {
       pinCode: config.WALLET_PIN_CODE,
     });
     // Building a shielded output needs the native crypto provider; it must be
-    // set before start().
+    // set before start(). Imported here so a missing native binding fails the
+    // bootstrap into `degraded` instead of crashing the server at import.
+    const { createDefaultShieldedCryptoProvider } = await import(
+      "@hathor/ct-crypto-node/provider"
+    );
     w.setShieldedCryptoProvider(createDefaultShieldedCryptoProvider());
 
     try {
