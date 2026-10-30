@@ -23,7 +23,7 @@ import {
   getFundDeps,
   reserveFeeFromWallet,
   reserveLargeFromWallet,
-  reserveLargeWithTimeout,
+  pollReservation,
   splitUtxo,
   scheduleReservationRelease,
   repopulatePoolFromWallet,
@@ -246,9 +246,9 @@ function isStaleUtxoError(err: unknown): boolean {
  * If the fullnode rejects the tx because the UTXO was spent externally,
  * the pool is rescanned from wallet-lib and the operation retries once.
  *
- * `largeWaitMs` bounds the wait for a wallet-sourced output on a large request
+ * `largeWaitMs` bounds the wait for wallet-sourced inputs (large or fee)
  * and defaults to the configured FUND_TIMEOUT_MS; it is a parameter for the
- * same reason {@link reserveLargeWithTimeout}'s is, so a test can reach the
+ * same reason {@link pollReservation}'s is, so a test can reach the
  * FUND_TIMEOUT mapping without waiting out the real 30s budget.
  */
 export async function fundAddress(
@@ -315,8 +315,11 @@ function reserveStandard(amount: bigint): ReservedUtxo {
  *  - The amount fits a test UTXO but the fee doesn't (a default-size shielded
  *    fund): that UTXO plus a below-split fee output from the wallet.
  *  - Otherwise, or when no fee output is free: one large output covering
- *    both, waiting up to `largeWaitMs` (RFC: large requests queue for a refill
- *    rather than failing immediately).
+ *    both.
+ *
+ * Both wallet-sourced paths wait up to `largeWaitMs` (RFC: large requests
+ * queue for a refill rather than failing immediately). The fee path is tried
+ * on every poll, since a fee output skipped as too fresh matures in a second.
  */
 async function reserveInputs(
   amount: bigint,
@@ -327,23 +330,35 @@ async function reserveInputs(
   if (total <= config.UTXO_SPLIT_AMOUNT) {
     return [reserveStandard(total)];
   }
-  if (amount <= config.UTXO_SPLIT_AMOUNT) {
-    // The test UTXO's change covers part of the fee; the fee input the rest.
-    const feeInput = await reserveFeeFromWallet(total - config.UTXO_SPLIT_AMOUNT);
-    if (feeInput !== null) {
-      try {
-        return [reserveStandard(amount), feeInput];
-      } catch (err) {
-        releaseReservation(feeInput.utxo);
-        throw err;
+  // The test UTXO's change covers part of the fee; the fee input the rest.
+  const feeNeeded = amount <= config.UTXO_SPLIT_AMOUNT ? total - config.UTXO_SPLIT_AMOUNT : null;
+  let loggedNoFee = false;
+  const inputs = await pollReservation(async () => {
+    if (feeNeeded !== null) {
+      const feeInput = await reserveFeeFromWallet(feeNeeded);
+      if (feeInput !== null) {
+        try {
+          return [reserveStandard(amount), feeInput];
+        } catch (err) {
+          releaseReservation(feeInput.utxo);
+          throw err;
+        }
+      }
+      if (!loggedNoFee) {
+        loggedNoFee = true;
+        logger.info({
+          event: "fund.fee_input_unavailable",
+          meta: { feeNeeded: feeNeeded.toString() },
+        });
       }
     }
-  }
-  const large = await reserveLargeWithTimeout(total, largeWaitMs);
-  if (large === null) {
+    const large = await reserveLargeFromWallet(total);
+    return large === null ? null : [large];
+  }, largeWaitMs);
+  if (inputs === null) {
     throw new FundTimeoutError(largeWaitMs);
   }
-  return [large];
+  return inputs;
 }
 
 /** Recipient output for an explicit-input send. */

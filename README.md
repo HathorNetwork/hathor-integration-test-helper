@@ -111,7 +111,7 @@ one exception. When `amount` fits a pool UTXO but the fee doesn't (e.g. a
 default-size shielded fund), the pool UTXO pays the amount and a second,
 below-`UTXO_SPLIT_AMOUNT` output from the genesis wallet pays the fee: the
 change parked by smaller requests, or one of the two fee seeds (`UTXO_SPLIT_AMOUNT / 2` each) every split mints. If none
-is free, one `large` output pays both.
+is free, one `large` output pays both. Either way the request waits up to `FUND_TIMEOUT_MS`, retrying both sources, before returning `409 FUND_TIMEOUT`.
 
 ### `GET /metrics`
 

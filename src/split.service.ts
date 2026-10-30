@@ -292,16 +292,29 @@ export async function reserveLargeWithTimeout(
   timeoutMs: number = config.FUND_TIMEOUT_MS,
   pollIntervalMs: number = LARGE_UTXO_POLL_INTERVAL_MS,
 ): Promise<ReservedUtxo | null> {
+  return pollReservation(() => reserveLargeFromWallet(amount), timeoutMs, pollIntervalMs);
+}
+
+/**
+ * Run `attempt` until it returns a reservation or `timeoutMs` passes, sleeping
+ * `pollIntervalMs` between tries. The first try runs immediately. Returns
+ * `null` at the deadline.
+ */
+export async function pollReservation<T>(
+  attempt: () => Promise<T | null>,
+  timeoutMs: number = config.FUND_TIMEOUT_MS,
+  pollIntervalMs: number = LARGE_UTXO_POLL_INTERVAL_MS,
+): Promise<T | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    // The deadline is enforced between queries, not around each query, on
-    // purpose: reserveLargeFromWallet's getUtxos is a synchronous in-process
-    // read of the wallet's already-synced UTXO store (not a fullnode round-trip
-    // — see genesis.service.isGenesisFunded), so it returns promptly and cannot
-    // hang. Wrapping this local read in an AbortSignal/timeout race (wallet-lib
-    // exposes no cancellation anyway) would add machinery for a stall that this
-    // call path can't produce.
-    const reserved = await reserveLargeFromWallet(amount);
+    // The deadline is enforced between attempts, not around each one, on
+    // purpose: the wallet queries behind them are synchronous in-process
+    // reads of the wallet's already-synced UTXO store (not a fullnode
+    // round-trip — see genesis.service.isGenesisFunded), so they return
+    // promptly and cannot hang. Wrapping a local read in an
+    // AbortSignal/timeout race (wallet-lib exposes no cancellation anyway)
+    // would add machinery for a stall that this call path can't produce.
+    const reserved = await attempt();
     if (reserved !== null) return reserved;
 
     const remaining = deadline - Date.now();
