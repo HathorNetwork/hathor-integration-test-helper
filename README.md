@@ -260,4 +260,7 @@ fullnode is reachable (e.g. the Lib integration stack).
 With no other env supplied the image uses defaults kept equal to wallet-lib's
 integration constants (testnet, the privnet node/tx-mining URLs, and the genesis
 seed), so it is plug-and-play for the Lib CI. Override any at run time, e.g.
-`-e HATHOR_NODE_URL=...`.
+`-e HATHOR_NODE_URL=...`. Against a fullnode whose network is named
+`privatenet` (as shielded-enabled private stacks are), also set
+`-e HATHOR_NETWORK=privatenet`: wallet-lib refuses a fullnode whose network
+name does not contain the configured one.

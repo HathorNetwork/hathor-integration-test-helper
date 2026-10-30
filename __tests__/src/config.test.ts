@@ -23,6 +23,28 @@ describe("loadConfig", () => {
     expect(cfg.GENESIS_SEED_WORDS.split(" ")).toHaveLength(24);
   });
 
+  test("HATHOR_NETWORK selects privatenet", () => {
+    expect(loadConfig({ HATHOR_NETWORK: "privatenet" }, noWarn).NETWORK).toBe(
+      "privatenet",
+    );
+  });
+
+  test("HATHOR_NETWORK falls back to testnet when blank", () => {
+    expect(loadConfig({ HATHOR_NETWORK: "  " }, noWarn).NETWORK).toBe("testnet");
+  });
+
+  test("HATHOR_NETWORK rejects an unknown network", () => {
+    try {
+      loadConfig({ HATHOR_NETWORK: "mainnet" }, noWarn);
+      throw new Error("expected a ConfigError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
+      expect((err as ConfigError).issues).toContain(
+        'HATHOR_NETWORK must be one of testnet/privatenet, got "mainnet"',
+      );
+    }
+  });
+
   test("fails fast on invalid integer env", () => {
     expect(() =>
       loadConfig({
