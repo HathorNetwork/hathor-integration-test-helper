@@ -36,6 +36,12 @@ export interface MultisigDebugData {
 export interface MultisigWallet {
   words: string;
   addresses: string[];
+  // Optional for the same reason as on SimpleWallet — consumers on older
+  // wallet-lib versions stay compatible; generateMultisigWallet always
+  // populates it. Derived from each participant's own seed: shielded keys
+  // come from the root key, and the P2SH redeem script plays no part, so
+  // these pairs are per-participant and not shared like `addresses`.
+  shieldedAddresses?: PrecalculatedShieldedAddress[];
   multisigDebugData: MultisigDebugData;
 }
 
@@ -171,6 +177,7 @@ export function generateMultisigWallet(
   return allWords.map((words) => ({
     words,
     addresses: [...sharedAddresses],
+    shieldedAddresses: generateShieldedAddresses(words),
     multisigDebugData: {
       total: participants,
       minSignatures: numSignatures,

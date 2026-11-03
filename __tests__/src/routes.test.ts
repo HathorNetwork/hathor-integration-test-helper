@@ -126,11 +126,26 @@ describe("handleMultisigWallet happy path", () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      wallets: { addresses: string[]; multisigDebugData: { pubkeys: string[] } }[];
+      wallets: {
+        addresses: string[];
+        shieldedAddresses?: unknown[];
+        multisigDebugData: { pubkeys: string[] };
+      }[];
       retrieveTimeMs: number;
     };
     expect(body.wallets).toHaveLength(2);
     expect(body.wallets[0]!.addresses).toEqual(body.wallets[1]!.addresses);
+    // Assert at the wire, not just the service: `shieldedAddresses` is
+    // optional on MultisigWallet, so a handler projecting a subset of fields
+    // would drop it from the response with a green typecheck and a green
+    // service-layer suite. Serving the field IS the feature.
+    expect(body.wallets[0]!.shieldedAddresses).toHaveLength(
+      body.wallets[0]!.addresses.length,
+    );
+    // Shared P2SH addresses but per-participant shielded pairs.
+    expect(body.wallets[0]!.shieldedAddresses).not.toEqual(
+      body.wallets[1]!.shieldedAddresses,
+    );
     expect(typeof body.retrieveTimeMs).toBe("number");
   });
 });
