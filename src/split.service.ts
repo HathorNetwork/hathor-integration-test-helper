@@ -89,6 +89,24 @@ export interface FundServiceDeps {
   ) => Promise<{ hash?: string | null }>;
 }
 
+/** Explicit-input sender built on the given SendTransaction class. */
+export function makeSendOutputs(
+  SendTx: typeof SendTransaction,
+): FundServiceDeps["sendOutputs"] {
+  return async (wallet, { outputs, inputs, changeAddress }) => {
+    const sendTx = new SendTx({
+      wallet,
+      outputs,
+      inputs,
+      changeAddress,
+      // Keep change transparent: the wallet rediscovers it as a plain output.
+      changeShieldedMode: OutputKind.TRANSPARENT,
+      pin: config.WALLET_PIN_CODE,
+    } as ConstructorParameters<typeof SendTransaction>[0]);
+    return sendTx.run();
+  };
+}
+
 /** Production wiring: real genesis wallet + wallet-lib builder/sender. */
 function defaultDeps(): FundServiceDeps {
   return {
@@ -102,18 +120,7 @@ function defaultDeps(): FundServiceDeps {
       );
       await sendTx.runFromMining();
     },
-    sendOutputs: async (wallet, { outputs, inputs, changeAddress }) => {
-      const sendTx = new SendTransaction({
-        wallet,
-        outputs,
-        inputs,
-        changeAddress,
-        // Keep change transparent: the wallet rediscovers it as a plain output.
-        changeShieldedMode: OutputKind.TRANSPARENT,
-        pin: config.WALLET_PIN_CODE,
-      } as ConstructorParameters<typeof SendTransaction>[0]);
-      return sendTx.run();
-    },
+    sendOutputs: makeSendOutputs(SendTransaction),
   };
 }
 

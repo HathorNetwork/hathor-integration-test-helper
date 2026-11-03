@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
 import { EventEmitter } from "node:events";
-import { ShieldedOutputMode } from "@hathor/wallet-lib/lib/shielded/types";
+import { OutputKind, ShieldedOutputMode } from "@hathor/wallet-lib/lib/shielded/types";
 import {
   populateFromUtxos,
   getPoolStats,
@@ -16,6 +16,7 @@ import {
 import {
   __setFundDepsForTest,
   __resetFundDepsForTest,
+  makeSendOutputs,
   type FundTemplateBuilder,
   type FundWallet,
   type SendOutputsRequest,
@@ -386,5 +387,34 @@ describe("reserveFee", () => {
     const fee = { txId: "fee", index: 0, amount: 10n };
     expect(reserveFee(fee)).toEqual({ utxo: fee, source: "fee" });
     expect(reserveFee(fee)).toBeNull();
+  });
+});
+
+describe("makeSendOutputs", () => {
+  test("keeps change transparent and signs with the wallet pin", async () => {
+    let options: Record<string, unknown> | undefined;
+    class FakeSendTransaction {
+      constructor(opts: Record<string, unknown>) {
+        options = opts;
+      }
+      async run() {
+        return { hash: "sent" };
+      }
+    }
+    const send = makeSendOutputs(
+      FakeSendTransaction as unknown as Parameters<typeof makeSendOutputs>[0],
+    );
+    const request: SendOutputsRequest = {
+      outputs: [{ address: SHIELDED, value: 1000n, token: "00" }],
+      inputs: [{ txId: "test", index: 0 }],
+      changeAddress: GENESIS,
+    };
+
+    await expect(send(makeWallet(), request)).resolves.toEqual({ hash: "sent" });
+    expect(options).toMatchObject({
+      ...request,
+      changeShieldedMode: OutputKind.TRANSPARENT,
+      pin: expect.any(String),
+    });
   });
 });
