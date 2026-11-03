@@ -201,7 +201,7 @@ describe("POST /fund happy path and readiness", () => {
       retryable: boolean;
     };
     expect(body.error).toBe("SERVICE_NOT_READY");
-    expect(body.message).toContain("initializing");
+    expect(body.message).toBe("funding subsystem is not ready (phase: initializing)");
     // Retryable: unlike FUNDING_ENABLED=false, this clears on its own.
     expect(body.retryable).toBe(true);
   });
@@ -214,7 +214,9 @@ describe("POST /fund happy path and readiness", () => {
     const res = await handleFund(fundRequest({ address: validAddress, amount: 500 }));
 
     expect(res.status).toBe(503);
-    expect((await res.json() as { error: string }).error).toBe("SERVICE_NOT_READY");
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("SERVICE_NOT_READY");
+    expect(body.message).toBe("funding subsystem is not ready (phase: idle)");
   });
 });
 

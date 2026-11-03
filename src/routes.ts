@@ -386,7 +386,7 @@ export async function handleFund(req: Request): Promise<Response> {
   // /ready reports for this phase.
   if (startupPhase !== "ready") {
     return jsonErrorFromService(
-      new ServiceNotReadyError("funding subsystem is still initializing"),
+      new ServiceNotReadyError(`funding subsystem is not ready (phase: ${startupPhase})`),
     );
   }
 
