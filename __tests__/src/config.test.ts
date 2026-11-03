@@ -269,8 +269,8 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ FUNDING_ENABLED: "maybe" })).toThrow(ConfigError);
   });
 
-  test("GENESIS_SYNC_TIMEOUT_MS defaults to 120000", () => {
-    expect(loadConfig({}, noWarn).GENESIS_SYNC_TIMEOUT_MS).toBe(120_000);
+  test("GENESIS_SYNC_TIMEOUT_MS defaults to 60000", () => {
+    expect(loadConfig({}, noWarn).GENESIS_SYNC_TIMEOUT_MS).toBe(60_000);
   });
 
   test("GENESIS_SYNC_TIMEOUT_MS parses an override", () => {
@@ -281,6 +281,14 @@ describe("loadConfig", () => {
 
   test("GENESIS_SYNC_TIMEOUT_MS rejects a sub-second value", () => {
     expect(() => loadConfig({ GENESIS_SYNC_TIMEOUT_MS: "500" })).toThrow(ConfigError);
+  });
+
+  test("REWARD_UNLOCK_TIMEOUT_MS defaults to 60000 and parses an override", () => {
+    expect(loadConfig({}, noWarn).REWARD_UNLOCK_TIMEOUT_MS).toBe(60_000);
+    expect(
+      loadConfig({ REWARD_UNLOCK_TIMEOUT_MS: "300000" }, noWarn).REWARD_UNLOCK_TIMEOUT_MS,
+    ).toBe(300_000);
+    expect(() => loadConfig({ REWARD_UNLOCK_TIMEOUT_MS: "500" })).toThrow(ConfigError);
   });
 
   // Wallet-generation-only mode (FUNDING_ENABLED=false) must not fail on

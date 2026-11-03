@@ -40,7 +40,7 @@ describe("readiness/status/live handlers (real modules)", () => {
     // test above under a different Bun file order.
     const verdict = await currentReadiness({
       genesisReady: true,
-      startupDegraded: false,
+      startupPhase: "ready",
       fundsQuery: async () => {
         throw new Error("wallet storage unavailable");
       },
@@ -55,7 +55,7 @@ describe("readiness/status/live handlers (real modules)", () => {
     let fundsQueried = false;
     const verdict = await currentReadiness({
       genesisReady: true,
-      startupDegraded: true,
+      startupPhase: "degraded",
       fundsQuery: async () => {
         fundsQueried = true;
         throw new Error("should not be called");
@@ -63,6 +63,23 @@ describe("readiness/status/live handlers (real modules)", () => {
     });
     expect(verdict.ready).toBe(false);
     expect(verdict.readyReason).toBe("funding_degraded");
+    expect(fundsQueried).toBe(false);
+  });
+
+  test("readiness reports funding_initializing without querying wallet funds", async () => {
+    // Same short-circuit as degraded: the pool is not seeded yet, so the
+    // wallet's balance cannot make the service ready and must not be read.
+    let fundsQueried = false;
+    const verdict = await currentReadiness({
+      genesisReady: true,
+      startupPhase: "initializing",
+      fundsQuery: async () => {
+        fundsQueried = true;
+        throw new Error("should not be called");
+      },
+    });
+    expect(verdict.ready).toBe(false);
+    expect(verdict.readyReason).toBe("funding_initializing");
     expect(fundsQueried).toBe(false);
   });
 

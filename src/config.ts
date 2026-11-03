@@ -53,6 +53,11 @@ export interface AppConfig {
    * would otherwise hang startup at `initializing` forever.
    */
   readonly GENESIS_SYNC_TIMEOUT_MS: number;
+  /**
+   * Upper bound (ms) on each split attempt's wait for the genesis output's
+   * block-reward height lock to clear.
+   */
+  readonly REWARD_UNLOCK_TIMEOUT_MS: number;
   readonly HATHOR_NODE_URL: string;
   readonly TX_MINING_URL: string;
   readonly TX_MIN_WEIGHT?: number;
@@ -384,11 +389,23 @@ export function loadConfig(
   const GENESIS_SEED_WORDS =
     GENESIS_SEED_WORDS_RAW || GENESIS_SEED_WORDS_DEFAULT;
 
-  const GENESIS_SYNC_TIMEOUT_MS_DEFAULT = "120000";
+  // A minute is enough because sync against a reachable fullnode is
+  // near-immediate; the rest is headroom. A stack that has not synced by then
+  // is misconfigured rather than slow, and `degraded` is the verdict a
+  // developer can act on. Raise it (max 600s) for genuinely slow environments.
+  const GENESIS_SYNC_TIMEOUT_MS_DEFAULT = "60000";
   const GENESIS_SYNC_TIMEOUT_MS = parseIntEnv(
     env,
     "GENESIS_SYNC_TIMEOUT_MS",
     GENESIS_SYNC_TIMEOUT_MS_DEFAULT,
+    issues,
+    { min: 1000, max: 600_000 },
+  );
+  // Same reasoning: on a network producing blocks the lock clears in seconds.
+  const REWARD_UNLOCK_TIMEOUT_MS = parseIntEnv(
+    env,
+    "REWARD_UNLOCK_TIMEOUT_MS",
+    "60000",
     issues,
     { min: 1000, max: 600_000 },
   );
@@ -440,6 +457,7 @@ export function loadConfig(
     GENESIS_SEED_WORDS,
     FUNDING_ENABLED,
     GENESIS_SYNC_TIMEOUT_MS,
+    REWARD_UNLOCK_TIMEOUT_MS,
     HATHOR_NODE_URL,
     TX_MINING_URL,
     TX_MIN_WEIGHT,
