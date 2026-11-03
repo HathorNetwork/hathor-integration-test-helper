@@ -1,9 +1,16 @@
 import { TransactionTemplateBuilder } from "@hathor/wallet-lib/lib/template/transaction";
 import SendTransaction from "@hathor/wallet-lib/lib/new/sendTransaction";
-import { NATIVE_TOKEN_UID } from "@hathor/wallet-lib/lib/constants";
+import type { ISendOutput } from "@hathor/wallet-lib/lib/new/sendTransaction";
+import {
+  FEE_PER_FULL_SHIELDED_OUTPUT,
+  MAX_OUTPUTS,
+  NATIVE_TOKEN_UID,
+} from "@hathor/wallet-lib/lib/constants";
+import { OutputKind } from "@hathor/wallet-lib/lib/shielded/types";
 import { getGenesisWallet, getGenesisAddress } from "./genesis.service";
 import {
   addTestUtxos,
+  reserveFee,
   reserveLarge,
   releaseReservation,
   populateFromUtxos,
@@ -59,12 +66,45 @@ export interface FundWallet extends TxObservationWallet {
   ): Promise<{ utxos: Array<{ tx_id: string; index: number; amount: bigint }> }>;
 }
 
+/** Explicit-input send: what a template can't express (shielded outputs). */
+export interface SendOutputsRequest {
+  outputs: ISendOutput[];
+  inputs: Array<{ txId: string; index: number }>;
+  changeAddress: string;
+}
+
 /** The external collaborators the fund/split services depend on. */
 export interface FundServiceDeps {
   getGenesisWallet: () => FundWallet;
   getGenesisAddress: () => string;
   newTemplateBuilder: () => FundTemplateBuilder;
   runSendTransaction: (wallet: unknown, transaction: unknown) => Promise<void>;
+  /**
+   * Build, sign, mine and push a tx spending exactly `inputs`, with transparent
+   * change. Resolves with the sent tx's hash.
+   */
+  sendOutputs: (
+    wallet: unknown,
+    request: SendOutputsRequest,
+  ) => Promise<{ hash?: string | null }>;
+}
+
+/** Explicit-input sender built on the given SendTransaction class. */
+export function makeSendOutputs(
+  SendTx: typeof SendTransaction,
+): FundServiceDeps["sendOutputs"] {
+  return async (wallet, { outputs, inputs, changeAddress }) => {
+    const sendTx = new SendTx({
+      wallet,
+      outputs,
+      inputs,
+      changeAddress,
+      // Keep change transparent: the wallet rediscovers it as a plain output.
+      changeShieldedMode: OutputKind.TRANSPARENT,
+      pin: config.WALLET_PIN_CODE,
+    } as ConstructorParameters<typeof SendTransaction>[0]);
+    return sendTx.run();
+  };
 }
 
 /** Production wiring: real genesis wallet + wallet-lib builder/sender. */
@@ -80,6 +120,7 @@ function defaultDeps(): FundServiceDeps {
       );
       await sendTx.runFromMining();
     },
+    sendOutputs: makeSendOutputs(SendTransaction),
   };
 }
 
@@ -137,6 +178,25 @@ export function __resetSplitStateForTest(): void {
 }
 
 /**
+ * Whether the tx that created an output has a timestamp before `nowSeconds`.
+ *
+ * The fullnode rejects a tx whose timestamp is not strictly greater than that
+ * of every tx it spends from, at 1-second granularity. Wallet-sourced outputs
+ * are often change from a fund sent moments ago, so spending one in the same
+ * second fails validation. Skipping it costs a short wait (large funding
+ * polls) or a fallback (fee sourcing). An output whose tx the wallet can't
+ * date is skipped too. The read is local wallet storage, not a fullnode call.
+ */
+async function createdBefore(
+  wallet: Pick<FundWallet, "getTx">,
+  txId: string,
+  nowSeconds: number,
+): Promise<boolean> {
+  const tx = (await wallet.getTx(txId)) as { timestamp?: unknown } | null;
+  return typeof tx?.timestamp === "number" && tx.timestamp < nowSeconds;
+}
+
+/**
  * Query the genesis wallet for a large output (>= `minAmount`) and atomically
  * reserve it through the pool. Returns the reserved UTXO, or `null` when the
  * wallet currently exposes no covering output.
@@ -173,8 +233,44 @@ export async function reserveLargeFromWallet(
     amount_bigger_than: minAmount - 1n,
     only_available_utxos: !options.includeLocked,
   });
+  const nowSeconds = Math.floor(Date.now() / 1000);
   for (const u of utxos) {
+    if (!(await createdBefore(wallet, u.tx_id, nowSeconds))) continue;
     const reserved = reserveLarge({ txId: u.tx_id, index: u.index, amount: u.amount });
+    if (reserved !== null) {
+      return reserved;
+    }
+  }
+  return null;
+}
+
+/**
+ * Query the genesis wallet for the smallest available below-split output of at
+ * least `minAmount` and reserve it to pay a shielded fund's fee. Returns `null`
+ * when none is free.
+ *
+ * Below-split outputs are what the pool otherwise ignores: change from funds
+ * smaller than `UTXO_SPLIT_AMOUNT`, and the fee seeds each split mints. Paying
+ * a fee spends one and leaves its remainder as another, so they keep serving
+ * fees. The smallest covering output is taken so larger ones stay usable.
+ */
+export async function reserveFeeFromWallet(
+  minAmount: bigint,
+): Promise<ReservedUtxo | null> {
+  const wallet = deps.getGenesisWallet();
+  const { utxos } = await wallet.getUtxos({
+    token: NATIVE_TOKEN_UID,
+    amount_bigger_than: minAmount - 1n,
+    amount_smaller_than: config.UTXO_SPLIT_AMOUNT,
+    only_available_utxos: true,
+  });
+  const bySize = [...utxos].sort((a, b) =>
+    a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0,
+  );
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  for (const u of bySize) {
+    if (!(await createdBefore(wallet, u.tx_id, nowSeconds))) continue;
+    const reserved = reserveFee({ txId: u.tx_id, index: u.index, amount: u.amount });
     if (reserved !== null) {
       return reserved;
     }
@@ -203,16 +299,29 @@ export async function reserveLargeWithTimeout(
   timeoutMs: number = config.FUND_TIMEOUT_MS,
   pollIntervalMs: number = LARGE_UTXO_POLL_INTERVAL_MS,
 ): Promise<ReservedUtxo | null> {
+  return pollReservation(() => reserveLargeFromWallet(amount), timeoutMs, pollIntervalMs);
+}
+
+/**
+ * Run `attempt` until it returns a reservation or `timeoutMs` passes, sleeping
+ * `pollIntervalMs` between tries. The first try runs immediately. Returns
+ * `null` at the deadline.
+ */
+export async function pollReservation<T>(
+  attempt: () => Promise<T | null>,
+  timeoutMs: number = config.FUND_TIMEOUT_MS,
+  pollIntervalMs: number = LARGE_UTXO_POLL_INTERVAL_MS,
+): Promise<T | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    // The deadline is enforced between queries, not around each query, on
-    // purpose: reserveLargeFromWallet's getUtxos is a synchronous in-process
-    // read of the wallet's already-synced UTXO store (not a fullnode round-trip
-    // — see genesis.service.isGenesisFunded), so it returns promptly and cannot
-    // hang. Wrapping this local read in an AbortSignal/timeout race (wallet-lib
-    // exposes no cancellation anyway) would add machinery for a stall that this
-    // call path can't produce.
-    const reserved = await reserveLargeFromWallet(amount);
+    // The deadline is enforced between attempts, not around each one, on
+    // purpose: the wallet queries behind them are synchronous in-process
+    // reads of the wallet's already-synced UTXO store (not a fullnode
+    // round-trip — see genesis.service.isGenesisFunded), so they return
+    // promptly and cannot hang. Wrapping a local read in an
+    // AbortSignal/timeout race (wallet-lib exposes no cancellation anyway)
+    // would add machinery for a stall that this call path can't produce.
+    const reserved = await attempt();
     if (reserved !== null) return reserved;
 
     const remaining = deadline - Date.now();
@@ -222,12 +331,50 @@ export async function reserveLargeWithTimeout(
   }
 }
 
+/** Fee outputs each split mints for {@link reserveFeeFromWallet}. */
+const FEE_SEED_COUNT = 2;
+
+/**
+ * Size of each fee seed: half a test UTXO, so below the split amount (never
+ * pooled, never large) and far above any shielded fee. `null` when the split
+ * amount is too small for a seed to pay the largest fee (two fully shielded
+ * outputs).
+ */
+function feeSeedAmount(splitAmount: bigint): bigint | null {
+  const seed = splitAmount / 2n;
+  return seed >= FEE_PER_FULL_SHIELDED_OUTPUT * 2n ? seed : null;
+}
+
+/**
+ * How many test outputs a split of `inputAmount` mints: the configured count,
+ * capped so the seeds and the change output still fit the tx's output limit,
+ * and so one split amount stays back for the seeds and change.
+ */
+export function splitOutputCount(
+  inputAmount: bigint,
+  splitAmount: bigint,
+  configuredCount: number,
+  seedCount: number,
+): number {
+  return Math.min(
+    configuredCount,
+    MAX_OUTPUTS - seedCount - 1,
+    Number(inputAmount / splitAmount) - 1,
+  );
+}
+
 /**
  * Split a large UTXO into many test-sized UTXOs.
  * Used at startup and whenever the pool runs low.
  *
  * Input:  1 large UTXO
- * Output: N × {genesisAddr, UTXO_SPLIT_AMOUNT} + 1 × {genesisAddr, change}
+ * Output: N × {genesisAddr, UTXO_SPLIT_AMOUNT}
+ *         + 2 × {genesisAddr, UTXO_SPLIT_AMOUNT / 2} (fee seeds)
+ *         + 1 × {genesisAddr, change}
+ *
+ * The fee seeds give default-size shielded funds a fee input even when no
+ * smaller fund has left change behind. They fit in the split amount that
+ * `maxOutputs` already keeps back from the test outputs.
  */
 export async function splitUtxo(utxo: Utxo): Promise<void> {
   if (splitInProgress) {
@@ -245,9 +392,13 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
     const genesisAddr = deps.getGenesisAddress();
     const splitAmount = config.UTXO_SPLIT_AMOUNT;
 
-    const maxOutputs = Math.min(
+    const seedAmount = feeSeedAmount(splitAmount);
+    const seedCount = seedAmount === null ? 0 : FEE_SEED_COUNT;
+    const maxOutputs = splitOutputCount(
+      utxo.amount,
+      splitAmount,
       config.UTXO_SPLIT_COUNT,
-      Number(utxo.amount / splitAmount) - 1,
+      seedCount,
     );
 
     if (maxOutputs < 1) {
@@ -281,6 +432,11 @@ export async function splitUtxo(utxo: Utxo): Promise<void> {
         address: "{addr}",
         amount: splitAmount,
       });
+    }
+    if (seedAmount !== null) {
+      for (let i = 0; i < seedCount; i++) {
+        builder.addTokenOutput({ address: "{addr}", amount: seedAmount });
+      }
     }
 
     builder.addCompleteAction({

@@ -71,7 +71,7 @@ describe("large fund path", () => {
             };
           },
           async getTx(id: string) {
-            return { id };
+            return { id, timestamp: 0 };
           },
         }) as unknown as FundWallet;
       },
@@ -111,6 +111,9 @@ describe("reserveLargeWithTimeout", () => {
     __setFundDepsForTest({
       getGenesisWallet: () =>
         ({
+          async getTx() {
+            return { timestamp: 0 };
+          },
           async getUtxos() {
             calls += 1;
             // Empty for the first couple of polls, then a large output appears.
@@ -149,7 +152,7 @@ describe("reserveLargeWithTimeout", () => {
     // Drives the real mapping in fund.service, so this asserts what /fund
     // itself answers: without that throw the endpoint returns 500 in place of
     // the documented 409.
-    const err = await fundAddress(genesisAddress, 30000n, 0).then(
+    const err = await fundAddress(genesisAddress, 30000n, null, 0).then(
       () => null,
       (e: unknown) => e,
     );
@@ -195,7 +198,7 @@ describe("fund isolation from a failing rescan", () => {
             return { hash: "tx-ok", outputs: [{ value: 500 }, { value: 500 }] };
           },
           async getTx(id: string) {
-            return { id };
+            return { id, timestamp: 0 };
           },
         }) as unknown as FundWallet;
       },

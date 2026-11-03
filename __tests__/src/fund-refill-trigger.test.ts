@@ -86,7 +86,7 @@ describe("a drained pool schedules its own refill", () => {
         };
       },
       async getTx(id: string) {
-        return { id };
+        return { id, timestamp: 0 };
       },
     }) as unknown as FundWallet;
 
@@ -189,7 +189,7 @@ describe("a drained pool schedules its own refill", () => {
         return { utxos: [] };
       },
       async getTx(id: string) {
-        return { id };
+        return { id, timestamp: 0 };
       },
     }) as unknown as FundWallet;
 

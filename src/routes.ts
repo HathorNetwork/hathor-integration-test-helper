@@ -324,7 +324,7 @@ let fundSeq = 0;
  * false`) — see below for why that is not a 503; 503 SERVICE_NOT_READY until
  * genesis has synced or while the bootstrap is degraded; 400/413
  * INVALID_REQUEST for a malformed body; on success 200 with
- * `{txId, amount, utxoSource}`. Domain failures (`POOL_EXHAUSTED`,
+ * `{txId, amount, utxoSource, shielded}`. Domain failures (`POOL_EXHAUSTED`,
  * `SPLIT_IN_PROGRESS`, `UTXO_STALE`, `FUND_TIMEOUT`) arrive as
  * {@link ServiceError}s and are mapped to their RFC response via
  * {@link jsonErrorFromService}; anything else is a 500.
@@ -361,10 +361,10 @@ export async function handleFund(req: Request): Promise<Response> {
     return parsed;
   }
 
-  const { address, amount } = parsed;
+  const { address, amount, shielded } = parsed;
 
   try {
-    const result = await fundAddress(address, amount);
+    const result = await fundAddress(address, amount, shielded);
     fundSeq += 1;
     recordFundSuccess();
     const stats = getPoolStats();
@@ -376,6 +376,7 @@ export async function handleFund(req: Request): Promise<Response> {
         testUtxos: stats.testUtxos,
         utxoSource: result.utxoSource,
         amount: result.amount.toString(),
+        shielded: result.shielded,
       },
     });
     return new Response(JSONBigInt.stringify(result), {

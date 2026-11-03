@@ -11,10 +11,20 @@
  * first request goes out.
  */
 import { logger } from "./logger";
+
+/**
+ * Networks the helper can run on. `privatenet` shares testnet's address
+ * bytes; it exists because wallet-lib rejects a fullnode whose network name
+ * does not contain the wallet's, and shielded-enabled private stacks name
+ * theirs `privatenet`.
+ */
+export const NETWORK_NAMES = ["testnet", "privatenet"] as const;
+export type HathorNetworkName = (typeof NETWORK_NAMES)[number];
+
 export interface AppConfig {
   readonly SIMPLE_WALLET_CACHE_SIZE: number;
   readonly PORT: number;
-  readonly NETWORK: "testnet";
+  readonly NETWORK: HathorNetworkName;
   readonly ADDRESS_COUNT: number;
   /**
    * Genesis wallet seed. Defaults to hathor-wallet-lib's integration genesis
@@ -216,6 +226,23 @@ function parseOptionalUrl(
   return raw;
 }
 
+function parseNetworkEnv(
+  env: NodeJS.ProcessEnv,
+  issues: string[],
+): HathorNetworkName {
+  const raw = env.HATHOR_NETWORK?.trim();
+  if (raw === undefined || raw === "") {
+    return "testnet";
+  }
+  if ((NETWORK_NAMES as readonly string[]).includes(raw)) {
+    return raw as HathorNetworkName;
+  }
+  issues.push(
+    `HATHOR_NETWORK must be one of ${NETWORK_NAMES.join("/")}, got "${raw}"`,
+  );
+  return "testnet";
+}
+
 function defaultOnWarning(warning: ConfigWarning): void {
   const { event, ...rest } = warning;
   logger.warn({ event, meta: rest });
@@ -256,6 +283,8 @@ export function loadConfig(
     issues,
     { min: 1n },
   );
+  // 254 test outputs + change fill a tx's 255 outputs. When splits mint fee
+  // seeds, they take two of those slots and a split mints at most 252.
   const UTXO_SPLIT_COUNT = parseIntEnv(
     env,
     "UTXO_SPLIT_COUNT",
@@ -324,6 +353,7 @@ export function loadConfig(
   }
 
   const FUNDING_ENABLED = parseBoolEnv(env, "FUNDING_ENABLED", true, issues);
+  const NETWORK = parseNetworkEnv(env, issues);
 
   const HATHOR_NODE_URL_DEFAULT = "http://localhost:8083/v1a/";
   const TX_MINING_URL_DEFAULT = "http://localhost:8035/";
@@ -405,7 +435,7 @@ export function loadConfig(
   return {
     SIMPLE_WALLET_CACHE_SIZE,
     PORT,
-    NETWORK: "testnet",
+    NETWORK,
     ADDRESS_COUNT: 22,
     GENESIS_SEED_WORDS,
     FUNDING_ENABLED,

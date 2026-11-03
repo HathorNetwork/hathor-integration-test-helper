@@ -5,7 +5,8 @@
     "": {
       "name": "hathor-integration-test-helper",
       "dependencies": {
-        "@hathor/wallet-lib": "4.1.0",
+        "@hathor/ct-crypto-node": "0.5.0",
+        "@hathor/wallet-lib": "4.3.0",
       },
       "devDependencies": {
         "@types/bun": "1.3.9",
@@ -15,13 +16,26 @@
       },
     },
   },
-  "patchedDependencies": {
-    "@hathor/wallet-lib@4.1.0": "patches/@hathor%2Fwallet-lib@4.1.0.patch",
-  },
   "packages": {
-    "@hathor/ct-crypto-provider": ["@hathor/ct-crypto-provider@0.0.1-shielded", "", {}, "sha512-whK65ujRjmwAyj7bqJBlHwgM74WLwvokdiSxI7ux1rB8aMGj1vfI/JYGkCiTGwQtsZj0gf1vdoPq853MnjEyzg=="],
+    "@hathor/ct-crypto-node": ["@hathor/ct-crypto-node@0.5.0", "", { "dependencies": { "@hathor/ct-crypto-provider": "0.5.0" }, "optionalDependencies": { "@hathor/ct-crypto-node-darwin-arm64": "0.5.0", "@hathor/ct-crypto-node-darwin-x64": "0.5.0", "@hathor/ct-crypto-node-linux-arm64-gnu": "0.5.0", "@hathor/ct-crypto-node-linux-arm64-musl": "0.5.0", "@hathor/ct-crypto-node-linux-x64-gnu": "0.5.0", "@hathor/ct-crypto-node-linux-x64-musl": "0.5.0", "@hathor/ct-crypto-node-win32-x64-msvc": "0.5.0" } }, "sha512-Qhr7iMnQZlPbNYRN05wKCni3BEPIpKMJh9ZpRhyG76x6FF3IulgTsttXwXy9/LzRsNrMruh4qRGksT8Rg5Lk8A=="],
 
-    "@hathor/wallet-lib": ["@hathor/wallet-lib@4.1.0", "", { "dependencies": { "@hathor/ct-crypto-provider": "0.0.1-shielded", "axios": "1.7.7", "bitcore-lib": "8.25.10", "bitcore-mnemonic": "8.25.10", "buffer": "6.0.3", "crypto-js": "4.2.0", "isomorphic-ws": "5.0.0", "lodash": "4.17.21", "queue-microtask": "1.2.3", "ws": "8.17.1", "zod": "3.23.8" } }, "sha512-4R9t+tbg4h2TaPAmaT0R3N90xFiqk3BJ9zn5/hhwqv/X/Tds8ZffW3oMvKwdfcdoBROrL1BfvuZTeo/bXHl1fw=="],
+    "@hathor/ct-crypto-node-darwin-arm64": ["@hathor/ct-crypto-node-darwin-arm64@0.5.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-jwjW70Kh/wPUAMx0NoXkX82hI4yuD6ASMFUqtKjgyVvkLLMYcUQN8Atj/wnXhx2d40+KATHqSDcnrbIYa9mLaw=="],
+
+    "@hathor/ct-crypto-node-darwin-x64": ["@hathor/ct-crypto-node-darwin-x64@0.5.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-0YeULVvP0HXp033xIizkE0ELNwx7VR4PPq7mH+GckzrDkSEg2irLgNNxmx6POiSfW/qYgtu7TZ8VL/sJBHTHqQ=="],
+
+    "@hathor/ct-crypto-node-linux-arm64-gnu": ["@hathor/ct-crypto-node-linux-arm64-gnu@0.5.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-t3eR2NZNBHuszQbGsanmBETrqcNy7IqYhQdGaMFCHDGRD+DqycF92QshSges9mpL/bPGeBnWRV9qE1u86Rq5Hg=="],
+
+    "@hathor/ct-crypto-node-linux-arm64-musl": ["@hathor/ct-crypto-node-linux-arm64-musl@0.5.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-S059K///ZLq0ckyOrQVi0U3+TAiL3SsipJQvMVyxMGOwgFSKGV2gx6aBiFqRC2JArpy6cp1haSbeC6KExZ93ew=="],
+
+    "@hathor/ct-crypto-node-linux-x64-gnu": ["@hathor/ct-crypto-node-linux-x64-gnu@0.5.0", "", { "os": "linux", "cpu": "x64" }, "sha512-a90iAJ1rewt4VEamPQffOu1YK19l+wAWJz1hOQjTwJWj8AOfddcgmHSDZyLL8a0SK6wyrFuxWMLSbUCfcJ1iog=="],
+
+    "@hathor/ct-crypto-node-linux-x64-musl": ["@hathor/ct-crypto-node-linux-x64-musl@0.5.0", "", { "os": "linux", "cpu": "x64" }, "sha512-GqGvZXGe6bkad4Bx3Env1Zub5SC1vA1nFS5v7LDtyLhra+jq/m6CwzNDYXZB9XTKO4rKPJBX6n4fEtPf0oZT1A=="],
+
+    "@hathor/ct-crypto-node-win32-x64-msvc": ["@hathor/ct-crypto-node-win32-x64-msvc@0.5.0", "", { "os": "win32", "cpu": "x64" }, "sha512-lqcFsEt2u+BoOcq/GjhsyF/2YFhapFpPmVKpUX6qmySK5dJAbYbqi0zYkoTCog5wrFzPizO/LSXxIRFtS53DfA=="],
+
+    "@hathor/ct-crypto-provider": ["@hathor/ct-crypto-provider@0.5.0", "", { "dependencies": { "@types/node": "20.14.2" } }, "sha512-me2LA6XWvIRhAoNslzZLtcZEITJFAXzmgVwhZ0ePenuUVK1JTztSGLOJtHgPVCDSDmmGxcbIsrxef/5UvLC+jw=="],
+
+    "@hathor/wallet-lib": ["@hathor/wallet-lib@4.3.0", "", { "dependencies": { "@hathor/ct-crypto-provider": "0.5.0", "axios": "1.7.7", "bitcore-lib": "8.25.10", "bitcore-mnemonic": "8.25.10", "buffer": "6.0.3", "crypto-js": "4.2.0", "isomorphic-ws": "5.0.0", "lodash": "4.17.21", "queue-microtask": "1.2.3", "ws": "8.17.1", "zod": "3.23.8" } }, "sha512-08qt479afOkQOwoSj+gclBuerYNplj5hPFdsgGZbzjusS58GPK2E+Njrnt3ZuWIan3yBc/2bqFgBhPYU+eXuJA=="],
 
     "@types/bun": ["@types/bun@1.3.9", "", { "dependencies": { "bun-types": "1.3.9" } }, "sha512-KQ571yULOdWJiMH+RIWIOZ7B2RXQGpL1YQrBtLIV3FqDcCu6FsbFUBwhdKUlCKUpS3PJDsHlJ1QKlpxoVR+xtw=="],
 
@@ -129,10 +143,14 @@
 
     "zod": ["zod@3.23.8", "", {}, "sha512-XBx9AXhXktjUqnepgTiE5flcKIYWi/rme0Eaj+5Y0lftuGBq+jyRu/md4WnuxqgP1ubdpNCsYEYPxrzVHD8d6g=="],
 
+    "@hathor/ct-crypto-provider/@types/node": ["@types/node@20.14.2", "", { "dependencies": { "undici-types": "~5.26.4" } }, "sha512-xyu6WAMVwv6AKFLB+e/7ySZVr/0zLCzOa7rSpq6jNwpqOrUbcACDWC+53d4n2QHOnDou0fbIsg8wZu/sxrnI4Q=="],
+
     "elliptic/bn.js": ["bn.js@4.12.2", "", {}, "sha512-n4DSx829VRTRByMRGdjQ9iqsN0Bh4OolPsFnaZBLcbi8iXcB+kJ9s7EnRt4wILZNV3kPLHkRVfOc/HvhC3ovDw=="],
 
     "elliptic/inherits": ["inherits@2.0.4", "", {}, "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ=="],
 
     "hash.js/inherits": ["inherits@2.0.4", "", {}, "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ=="],
+
+    "@hathor/ct-crypto-provider/@types/node/undici-types": ["undici-types@5.26.5", "", {}, "sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA=="],
   }
 }

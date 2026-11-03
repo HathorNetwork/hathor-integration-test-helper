@@ -168,3 +168,87 @@ describe("parseFundBody", () => {
     expect(body.retryable).toBe(false);
   });
 });
+
+const shieldedAddress = generateSimpleWallet().shieldedAddresses![0]!.shieldedBase58;
+
+describe("parseFundBody shielded funding", () => {
+  test("accepts a shielded address with a transparent amount", async () => {
+    const result = await parseFundBody(
+      fundReq(JSON.stringify({ address: shieldedAddress })),
+    );
+    expect(isResponse(result)).toBe(false);
+    if (isResponse(result)) return;
+
+    expect(result.address).toBe(shieldedAddress);
+    expect(result.shielded).toBeNull();
+  });
+
+  test("legacy address without shielded defaults to transparent", async () => {
+    const result = await parseFundBody(
+      fundReq(JSON.stringify({ address: validAddress })),
+    );
+    if (isResponse(result)) throw new Error("expected parsed body");
+    expect(result.shielded).toBeNull();
+  });
+
+  test.each(["amount", "full"] as const)(
+    "accepts shielded=%s with a shielded address",
+    async (mode) => {
+      const result = await parseFundBody(
+        fundReq(JSON.stringify({ address: shieldedAddress, shielded: mode })),
+      );
+      if (isResponse(result)) throw new Error("expected parsed body");
+      expect(result.shielded).toBe(mode);
+    },
+  );
+
+  test("treats shielded=null as transparent", async () => {
+    const result = await parseFundBody(
+      fundReq(JSON.stringify({ address: shieldedAddress, shielded: null })),
+    );
+    if (isResponse(result)) throw new Error("expected parsed body");
+    expect(result.shielded).toBeNull();
+  });
+
+  test("returns 400 for shielded mode with a legacy address", async () => {
+    const result = await parseFundBody(
+      fundReq(JSON.stringify({ address: validAddress, shielded: "amount" })),
+    );
+    if (!isResponse(result)) throw new Error("expected error response");
+    expect(result.status).toBe(400);
+    const body = await result.json() as { error: string; message: string };
+    expect(body.error).toBe("INVALID_REQUEST");
+    expect(body.message).toContain("shielded address");
+  });
+
+  test("returns 400 for a shielded amount of 1", async () => {
+    const result = await parseFundBody(
+      fundReq(JSON.stringify({ address: shieldedAddress, amount: 1, shielded: "amount" })),
+    );
+    if (!isResponse(result)) throw new Error("expected error response");
+    expect(result.status).toBe(400);
+  });
+
+  test("returns 400 for a shielded amount at the 2^40 range-proof cap", async () => {
+    const result = await parseFundBody(
+      fundReq(JSON.stringify({
+        address: shieldedAddress,
+        amount: (1n << 40n).toString(),
+        shielded: "full",
+      })),
+    );
+    if (!isResponse(result)) throw new Error("expected error response");
+    expect(result.status).toBe(400);
+  });
+
+  test.each([true, "yes", 1, "AMOUNT"])(
+    "returns 400 for unknown shielded value %p",
+    async (value) => {
+      const result = await parseFundBody(
+        fundReq(JSON.stringify({ address: shieldedAddress, shielded: value })),
+      );
+      if (!isResponse(result)) throw new Error("expected error response");
+      expect(result.status).toBe(400);
+    },
+  );
+});

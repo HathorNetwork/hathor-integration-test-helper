@@ -94,6 +94,13 @@ export async function initGenesisWallet(): Promise<void> {
       password: config.WALLET_PASSWORD,
       pinCode: config.WALLET_PIN_CODE,
     });
+    // Building a shielded output needs the native crypto provider; it must be
+    // set before start(). Imported here so a missing native binding fails the
+    // bootstrap into `degraded` instead of crashing the server at import.
+    const { createDefaultShieldedCryptoProvider } = await import(
+      "@hathor/ct-crypto-node/provider"
+    );
+    w.setShieldedCryptoProvider(createDefaultShieldedCryptoProvider());
 
     try {
       await w.start();
