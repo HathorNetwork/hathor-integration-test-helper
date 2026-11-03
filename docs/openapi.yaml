@@ -114,7 +114,8 @@ paths:
             truncated.
           schema:
             type: string
-            pattern: "^\\d+$"
+            # The handler rejects 0 but accepts leading zeros ("03").
+            pattern: "^0*[1-9][0-9]*$"
           example: "3"
         - name: numSignatures
           in: query
@@ -124,7 +125,8 @@ paths:
             `<= participants`.
           schema:
             type: string
-            pattern: "^\\d+$"
+            # The handler rejects 0 but accepts leading zeros ("03").
+            pattern: "^0*[1-9][0-9]*$"
           example: "2"
       responses:
         "200":
@@ -294,6 +296,19 @@ paths:
         `FUND_TIMEOUT_MS` (default 30s) for a covering wallet output and then
         answers `409 FUND_TIMEOUT`.
 
+        `address` may be legacy or shielded. With `shielded` set, the output
+        is shielded: `amount` hides the value, `full` hides the value and the
+        token. A shielded output costs a fee of 2 units (`amount`) or 4
+        (`full`), because wallet-lib always splits it into two shielded
+        outputs. The helper pays it, so the recipient receives exactly
+        `amount`, and change returns transparent to the genesis wallet. The
+        table above then applies to `amount` plus the fee, with one exception:
+        when `amount` fits a pool UTXO but the fee doesn't, the pool UTXO pays
+        the amount and a below-`UTXO_SPLIT_AMOUNT` genesis output pays the
+        fee. `utxoSource` still reports `test` in that case. If no such output
+        is free, one `large` output pays both, under the same
+        `FUND_TIMEOUT_MS` wait.
+
         `amount` echoes the request, not a re-read of the chain — `txId` is the
         authority for what settled.
       parameters:
@@ -323,6 +338,11 @@ paths:
                 value:
                   address: WYiD1E8n5oB9weZ8NMyM3KoCjKf1KCjWAZ
                   amount: "9007199254740993"
+              shielded-amount:
+                summary: Shielded output hiding the value
+                value:
+                  address: K3LTT1rrQ8R5sne9FeL5rNcpsjU2N16nMoCaot3n5Co7BduSQhCmytsHDaMvcKmsef5zzTg9p7ZxMgBUYfhujaL1iUoJMC5Xn
+                  shielded: amount
       responses:
         "200":
           description: Transaction built, signed, and broadcast.
@@ -336,9 +356,11 @@ paths:
         "400":
           description: |
             Either the request is malformed — wrong content type, unparseable
-            JSON, non-object body, missing/invalid `address`, or an `amount`
-            that is not a positive integer — or funding is switched off for
-            this deployment (`FUNDING_ENABLED=false`).
+            JSON, non-object body, missing/invalid `address`, an `amount`
+            that is not a positive integer, or an invalid `shielded` request
+            (unknown mode, legacy `address`, or `amount` outside
+            `2 <= amount < 2^40`) — or funding is switched off for this
+            deployment (`FUNDING_ENABLED=false`).
 
             The disabled case is deliberately a non-retryable `400` rather than
             a `503`: this deployment can never fund, so telling the client to
@@ -355,6 +377,11 @@ paths:
                   value:
                     error: INVALID_REQUEST
                     message: address must be a valid Hathor address for the configured network
+                    retryable: false
+                shielded-to-legacy:
+                  value:
+                    error: INVALID_REQUEST
+                    message: a shielded output requires a shielded address
                     retryable: false
                 funding-disabled:
                   value:
@@ -836,9 +863,9 @@ components:
           type: string
           minLength: 1
           description: >-
-            Destination address. Surrounding whitespace is trimmed, then the
-            value must decode as a valid Hathor address for the configured
-            network.
+            Destination address, legacy or shielded. Surrounding whitespace is
+            trimmed, then the value must decode as a valid Hathor address for
+            the configured network.
         amount:
           description: >-
             Amount in the smallest unit. Omitted or `null`, it defaults to
@@ -851,20 +878,32 @@ components:
             and 500. The string form is stricter: it is matched against
             `^[0-9]+$` after trimming, so `"1e3"` and `"500.0"` are rejected.
             Negatives and non-integer values are rejected in both forms.
+
+            A shielded request also needs `2 <= amount < 2^40`: one unit can't
+            be split in two, and the range proof caps the value.
           oneOf:
             - type: integer
               minimum: 1
               maximum: 9007199254740991
             - type: string
-              pattern: "^\\s*[0-9]+\\s*$"
+              # Digits with at least one non-zero: the handler rejects "0"
+              # but accepts leading zeros ("01").
+              pattern: "^\\s*0*[1-9][0-9]*\\s*$"
             # The handler treats an explicit null exactly like an omitted
             # field; without this branch a generated client would reject a
             # request the service answers with 200.
             - type: "null"
+        shielded:
+          type: [string, "null"]
+          enum: [amount, full, null]
+          description: >-
+            Send a shielded output: `amount` hides the value, `full` hides the
+            value and the token. Requires a shielded `address`. Omitted or
+            `null` sends a transparent output, to either address kind.
 
     FundResponse:
       type: object
-      required: [txId, amount, utxoSource]
+      required: [txId, amount, utxoSource, shielded]
       properties:
         txId:
           type: string
@@ -882,8 +921,16 @@ components:
           type: string
           description: >-
             Which reservation path served the request: `test` spent one pool
-            UTXO, `large` was sourced live from the genesis wallet.
+            UTXO, `large` was sourced live from the genesis wallet. A shielded
+            request that also drew a fee input from the wallet still reports
+            `test`.
           enum: [test, large]
+        shielded:
+          type: [string, "null"]
+          enum: [amount, full, null]
+          description: >-
+            The requested `shielded` mode, echoed back; `null` for a
+            transparent output.
 
     MetricsResponse:
       type: object
